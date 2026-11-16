@@ -3,32 +3,44 @@ import { ArrowRight, CheckCircle2, Eye, EyeOff, Film, Lock, Mail, User } from 'l
 import type { AuthView } from '../types/media';
 
 interface AuthPageProps {
-  onLogin: (email: string) => void;
-  onRegister: (displayName: string, email: string) => void;
+  onLogin: (email: string, password: string) => Promise<void>;
+  onRegister: (
+    displayName: string,
+    email: string,
+    password: string
+  ) => Promise<{ requiresEmailConfirmation?: boolean }>;
+  onResetPassword: (email: string) => Promise<void>;
   onDemoLogin: () => void;
 }
 
-export function AuthPage({ onLogin, onRegister, onDemoLogin }: AuthPageProps) {
+export function AuthPage({
+  onLogin,
+  onRegister,
+  onResetPassword,
+  onDemoLogin,
+}: AuthPageProps) {
   const [view, setView] = useState<AuthView>('login');
   const [displayName, setDisplayName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [resetSent, setResetSent] = useState(false);
+  const [confirmationMessage, setConfirmationMessage] = useState<string | null>(null);
 
   const switchView = (nextView: AuthView) => {
     setView(nextView);
     setErrorMessage(null);
-    setResetSent(false);
+    setConfirmationMessage(null);
   };
 
   const validateEmail = (value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
 
-  const handleSubmit = (event: FormEvent) => {
+  const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
     setErrorMessage(null);
+    setConfirmationMessage(null);
 
     if (!validateEmail(email)) {
       setErrorMessage('Bitte gib eine gültige E-Mail-Adresse ein.');
@@ -36,7 +48,17 @@ export function AuthPage({ onLogin, onRegister, onDemoLogin }: AuthPageProps) {
     }
 
     if (view === 'reset') {
-      setResetSent(true);
+      setIsSubmitting(true);
+      try {
+        await onResetPassword(email.trim());
+        setConfirmationMessage(
+          `Falls ein Konto für ${email.trim()} existiert, wurde ein Link zum Zurücksetzen des Passworts vorbereitet.`
+        );
+      } catch (err) {
+        setErrorMessage((err as Error).message || 'Zurücksetzen fehlgeschlagen.');
+      } finally {
+        setIsSubmitting(false);
+      }
       return;
     }
 
@@ -54,11 +76,30 @@ export function AuthPage({ onLogin, onRegister, onDemoLogin }: AuthPageProps) {
         setErrorMessage('Die eingegebenen Passwörter stimmen nicht überein.');
         return;
       }
-      onRegister(displayName.trim(), email.trim());
+      setIsSubmitting(true);
+      try {
+        const res = await onRegister(displayName.trim(), email.trim(), password);
+        if (res.requiresEmailConfirmation) {
+          setConfirmationMessage(
+            `Konto erstellt! Bitte bestätige deine E-Mail-Adresse über den Link an ${email.trim()}.`
+          );
+        }
+      } catch (err) {
+        setErrorMessage((err as Error).message || 'Registrierung fehlgeschlagen.');
+      } finally {
+        setIsSubmitting(false);
+      }
       return;
     }
 
-    onLogin(email.trim());
+    setIsSubmitting(true);
+    try {
+      await onLogin(email.trim(), password);
+    } catch (err) {
+      setErrorMessage((err as Error).message || 'Anmeldung fehlgeschlagen.');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -162,18 +203,13 @@ export function AuthPage({ onLogin, onRegister, onDemoLogin }: AuthPageProps) {
             </div>
           )}
 
-          {resetSent ? (
+          {confirmationMessage ? (
             <div className="space-y-4 rounded-xl border border-[#30303A] bg-[#17171D] p-5">
               <div className="flex items-start gap-3">
                 <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-[#B29AF5]" aria-hidden="true" />
                 <div className="space-y-1">
-                  <p className="text-sm font-semibold text-[#F5F5F7]">
-                    Anfrage vermerkt (Frontend-Vorschau)
-                  </p>
-                  <p className="text-sm leading-relaxed text-[#A0A0AD]">
-                    Sobald Supabase Auth konfiguriert ist, wird an <strong className="text-[#F5F5F7]">{email}</strong> ein
-                    Link zum Zurücksetzen des Passworts gesendet.
-                  </p>
+                  <p className="text-sm font-semibold text-[#F5F5F7]">E-Mail-Hinweis</p>
+                  <p className="text-sm leading-relaxed text-[#A0A0AD]">{confirmationMessage}</p>
                 </div>
               </div>
               <button
@@ -307,12 +343,17 @@ export function AuthPage({ onLogin, onRegister, onDemoLogin }: AuthPageProps) {
 
               <button
                 type="submit"
-                className="inline-flex min-h-[44px] w-full items-center justify-center gap-2 rounded-lg bg-[#9275E8] px-4 py-2.5 text-sm font-semibold text-[#101014] transition-colors hover:bg-[#B29AF5]"
+                disabled={isSubmitting}
+                className="inline-flex min-h-[44px] w-full items-center justify-center gap-2 rounded-lg bg-[#9275E8] px-4 py-2.5 text-sm font-semibold text-[#101014] transition-colors hover:bg-[#B29AF5] disabled:opacity-60"
               >
                 <span>
-                  {view === 'login' && 'Anmelden'}
-                  {view === 'register' && 'Konto erstellen & starten'}
-                  {view === 'reset' && 'Link zum Zurücksetzen anfordern'}
+                  {isSubmitting
+                    ? 'Wird verarbeitet…'
+                    : view === 'login'
+                      ? 'Anmelden'
+                      : view === 'register'
+                        ? 'Konto erstellen & starten'
+                        : 'Link zum Zurücksetzen anfordern'}
                 </span>
                 <ArrowRight className="h-4 w-4" aria-hidden="true" />
               </button>

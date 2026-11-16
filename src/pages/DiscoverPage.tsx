@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Search, SlidersHorizontal, X } from 'lucide-react';
 import { ALL_GENRES } from '../data/catalog';
-import { searchCatalogMedia } from '../services/tmdbService';
+import { searchCatalogMedia, searchRemoteMedia } from '../services/tmdbService';
 import type { FavoriteItem, MediaItem, MediaType } from '../types/media';
 import { MediaCard } from '../components/MediaCard';
 import { SkeletonCard } from '../components/SkeletonCard';
@@ -13,6 +13,7 @@ interface DiscoverPageProps {
   favorites: FavoriteItem[];
   onOpenDetail: (media: MediaItem) => void;
   onToggleFavorite: (media: MediaItem) => void;
+  onCatalogExpand?: (items: MediaItem[]) => void;
 }
 
 export function DiscoverPage({
@@ -21,12 +22,18 @@ export function DiscoverPage({
   favorites,
   onOpenDetail,
   onToggleFavorite,
+  onCatalogExpand,
 }: DiscoverPageProps) {
   const [rawQuery, setRawQuery] = useState(initialQuery);
   const [debouncedQuery, setDebouncedQuery] = useState(initialQuery);
   const [mediaType, setMediaType] = useState<'all' | MediaType>('all');
   const [selectedGenre, setSelectedGenre] = useState<string>('Alle');
   const [isSearching, setIsSearching] = useState(false);
+  const [results, setResults] = useState<MediaItem[]>(() =>
+    searchCatalogMedia({ query: initialQuery, mediaType: 'all', genre: 'Alle' })
+  );
+  const [dataSource, setDataSource] = useState<'tmdb' | 'catalog'>('catalog');
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const searchInputRef = useRef<HTMLInputElement>(null);
 
@@ -44,28 +51,60 @@ export function DiscoverPage({
   // Debounced search query (250ms) to avoid redundant API requests
   useEffect(() => {
     if (rawQuery === debouncedQuery) {
-      setIsSearching(false);
       return;
     }
     setIsSearching(true);
     const timer = window.setTimeout(() => {
       setDebouncedQuery(rawQuery);
-      setIsSearching(false);
     }, 250);
     return () => window.clearTimeout(timer);
   }, [rawQuery, debouncedQuery]);
 
-  const favoriteIds = useMemo(() => new Set(favorites.map((f) => f.mediaId)), [favorites]);
+  // Fetch live TMDB results (or curated catalog fallback) whenever filters settle
+  useEffect(() => {
+    const controller = new AbortController();
+    let active = true;
+    setIsSearching(true);
+    setErrorMessage(null);
 
-  const results = useMemo(
-    () =>
-      searchCatalogMedia({
+    searchRemoteMedia(
+      {
         query: debouncedQuery,
         mediaType,
         genre: selectedGenre,
-      }),
-    [debouncedQuery, mediaType, selectedGenre]
-  );
+      },
+      controller.signal
+    )
+      .then((res) => {
+        if (!active) return;
+        setResults(res.items);
+        setDataSource(res.source);
+        setIsSearching(false);
+        if (res.items.length > 0 && onCatalogExpand) {
+          onCatalogExpand(res.items);
+        }
+      })
+      .catch((err: unknown) => {
+        if (!active || (err as Error)?.name === 'AbortError') return;
+        setResults(
+          searchCatalogMedia({
+            query: debouncedQuery,
+            mediaType,
+            genre: selectedGenre,
+          })
+        );
+        setDataSource('catalog');
+        setErrorMessage('Live-Suche momentan nicht erreichbar – lokaler Katalog wird angezeigt.');
+        setIsSearching(false);
+      });
+
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [debouncedQuery, mediaType, selectedGenre, onCatalogExpand]);
+
+  const favoriteIds = useMemo(() => new Set(favorites.map((f) => f.mediaId)), [favorites]);
 
   const resetFilters = () => {
     setRawQuery('');
@@ -95,7 +134,8 @@ export function DiscoverPage({
             />
             <input
               ref={searchInputRef}
-              type="search"
+              type="text"
+              inputMode="search"
               value={rawQuery}
               onChange={(e) => setRawQuery(e.target.value)}
               aria-label="Filme und Serien durchsuchen"
@@ -171,13 +211,27 @@ export function DiscoverPage({
         </div>
       </section>
 
+      {errorMessage && (
+        <div
+          role="status"
+          className="rounded-xl border border-[#30303A] bg-[#17171D] px-4 py-3 text-xs text-[#A0A0AD]"
+        >
+          {errorMessage}
+        </div>
+      )}
+
       {/* Results Header */}
-      <div className="flex items-center justify-between border-b border-[#30303A] pb-3 text-xs text-[#A0A0AD]">
-        <span className="tabular-nums">
-          {isSearching
-            ? 'Suche läuft…'
-            : `${results.length} ${results.length === 1 ? 'Ergebnis' : 'Ergebnisse'} gefunden`}
-        </span>
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#30303A] pb-3 text-xs text-[#A0A0AD]">
+        <div className="flex items-center gap-2">
+          <span className="tabular-nums">
+            {isSearching
+              ? 'Suche läuft…'
+              : `${results.length} ${results.length === 1 ? 'Ergebnis' : 'Ergebnisse'} gefunden`}
+          </span>
+          <span aria-hidden="true">·</span>
+          <span>{dataSource === 'tmdb' ? 'Quelle: TMDB Live' : 'Quelle: Kuratierter Katalog'}</span>
+        </div>
+
         {(rawQuery || mediaType !== 'all' || selectedGenre !== 'Alle') && (
           <button
             type="button"
@@ -212,7 +266,7 @@ export function DiscoverPage({
         <EmptyState
           icon={<Search className="h-6 w-6" />}
           title="Keine passenden Titel gefunden"
-          description="Für deine aktuelle Suche oder Filterkombination liegen im Katalog keine Treffer vor. Versuche einen anderen Suchbegriff oder setze die Filter zurück."
+          description="Für deine aktuelle Suche oder Filterkombination liegen keine Treffer vor. Versuche einen anderen Suchbegriff oder setze die Filter zurück."
           actionLabel="Alle Titel anzeigen"
           onAction={resetFilters}
         />

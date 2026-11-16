@@ -1,4 +1,9 @@
-export function Footer() {
+interface FooterProps {
+  tmdbLive?: boolean;
+  supabaseLive?: boolean;
+}
+
+export function Footer({ tmdbLive = false, supabaseLive = false }: FooterProps) {
   return (
     <footer className="mt-16 border-t border-[#30303A] bg-[#101014] pb-24 md:pb-8">
       <div className="mx-auto flex max-w-7xl flex-col gap-4 px-4 py-8 text-xs text-[#A0A0AD] sm:px-6 lg:px-8 md:flex-row md:items-center md:justify-between">
@@ -10,9 +15,9 @@ export function Footer() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-          <span>Entwicklungsstand: Frontend-Grundlage</span>
+          <span>{tmdbLive ? 'TMDB-Proxy aktiv' : 'Kuratierter Katalog'}</span>
           <span aria-hidden="true">·</span>
-          <span>TMDB &amp; Supabase Integration vorbereitet</span>
+          <span>{supabaseLive ? 'Supabase-Datenbank' : 'Lokale Sitzung'}</span>
         </div>
       </div>
     </footer>

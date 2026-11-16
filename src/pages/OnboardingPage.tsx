@@ -1,14 +1,17 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, ArrowRight, Check, Film, Heart, Search, Tv, X } from 'lucide-react';
 import type { FavoriteItem, MediaItem, MediaType } from '../types/media';
-import { searchCatalogMedia } from '../services/tmdbService';
+import { searchCatalogMedia, searchRemoteMedia } from '../services/tmdbService';
 import { CinemaPoster } from '../components/CinemaPoster';
+import { SkeletonCard } from '../components/SkeletonCard';
 
 interface OnboardingPageProps {
   displayName: string;
   favorites: FavoriteItem[];
+  knownCatalog: MediaItem[];
   onToggleFavorite: (media: MediaItem) => void;
   onComplete: () => void;
+  onCatalogExpand?: (items: MediaItem[]) => void;
 }
 
 const RECOMMENDED_MIN_FAVORITES = 5;
@@ -16,24 +19,62 @@ const RECOMMENDED_MIN_FAVORITES = 5;
 export function OnboardingPage({
   displayName,
   favorites,
+  knownCatalog,
   onToggleFavorite,
   onComplete,
+  onCatalogExpand,
 }: OnboardingPageProps) {
   const [step, setStep] = useState<'intro' | 'select' | 'summary'>('intro');
   const [query, setQuery] = useState('');
+  const [debouncedQuery, setDebouncedQuery] = useState('');
   const [mediaType, setMediaType] = useState<'all' | MediaType>('all');
+  const [displayedMedia, setDisplayedMedia] = useState<MediaItem[]>(() =>
+    searchCatalogMedia({ mediaType: 'all' })
+  );
+  const [isLoading, setIsLoading] = useState(false);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDebouncedQuery(query);
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [query]);
+
+  useEffect(() => {
+    if (step !== 'select') return;
+    const controller = new AbortController();
+    let active = true;
+    setIsLoading(true);
+
+    searchRemoteMedia({ query: debouncedQuery, mediaType }, controller.signal)
+      .then((res) => {
+        if (!active) return;
+        setDisplayedMedia(res.items);
+        setIsLoading(false);
+        if (res.items.length > 0 && onCatalogExpand) {
+          onCatalogExpand(res.items);
+        }
+      })
+      .catch((err: unknown) => {
+        if (!active || (err as Error)?.name === 'AbortError') return;
+        setDisplayedMedia(searchCatalogMedia({ query: debouncedQuery, mediaType }));
+        setIsLoading(false);
+      });
+
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [step, debouncedQuery, mediaType, onCatalogExpand]);
 
   const favoriteIds = useMemo(() => new Set(favorites.map((f) => f.mediaId)), [favorites]);
 
-  const filteredMedia = useMemo(
-    () => searchCatalogMedia({ query, mediaType }),
-    [query, mediaType]
-  );
-
   const selectedMedia = useMemo(() => {
-    const all = searchCatalogMedia({});
-    return all.filter((item) => favoriteIds.has(item.id));
-  }, [favoriteIds]);
+    const map = new Map(knownCatalog.map((item) => [item.id, item]));
+    return favorites
+      .map((fav) => fav.mediaSnapshot ?? map.get(fav.mediaId))
+      .filter((item): item is MediaItem => Boolean(item));
+  }, [favorites, knownCatalog]);
 
   const progressPercent = Math.min(
     100,
@@ -83,7 +124,7 @@ export function OnboardingPage({
                   01. Titel suchen
                 </p>
                 <p className="text-xs leading-relaxed text-[#A0A0AD]">
-                  Durchsuche kuratierte Filme und Serien nach Titel, Genre oder Regie.
+                  Durchsuche Filme und Serien nach Titel, Genre oder Regie.
                 </p>
               </div>
               <div className="space-y-1">
@@ -210,53 +251,61 @@ export function OnboardingPage({
             </div>
 
             {/* Selectable Poster Grid */}
-            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
-              {filteredMedia.map((item) => {
-                const isSelected = favoriteIds.has(item.id);
-                return (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => onToggleFavorite(item)}
-                    aria-pressed={isSelected}
-                    aria-label={
-                      isSelected
-                        ? `„${item.title}“ aus Auswahl entfernen`
-                        : `„${item.title}“ als Favorit auswählen`
-                    }
-                    className={`group flex flex-col rounded-xl border p-2.5 text-left transition-colors ${
-                      isSelected
-                        ? 'border-[#9275E8] bg-[#9275E8]/12'
-                        : 'border-[#30303A] bg-[#1E1E27] hover:border-[#4B4B5C]'
-                    }`}
-                  >
-                    <div className="relative w-full">
-                      <CinemaPoster media={item} compact />
-                      <div
-                        className={`absolute top-2 right-2 flex h-8 w-8 items-center justify-center rounded-lg border ${
-                          isSelected
-                            ? 'border-[#9275E8] bg-[#9275E8] text-[#101014]'
-                            : 'border-[#30303A] bg-[#101014]/80 text-[#A0A0AD]'
-                        }`}
-                      >
-                        {isSelected ? (
-                          <Check className="h-4 w-4" aria-hidden="true" />
-                        ) : (
-                          <Heart className="h-4 w-4" aria-hidden="true" />
-                        )}
+            {isLoading ? (
+              <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
+                {Array.from({ length: 12 }).map((_, idx) => (
+                  <SkeletonCard key={idx} />
+                ))}
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
+                {displayedMedia.map((item) => {
+                  const isSelected = favoriteIds.has(item.id);
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => onToggleFavorite(item)}
+                      aria-pressed={isSelected}
+                      aria-label={
+                        isSelected
+                          ? `„${item.title}“ aus Auswahl entfernen`
+                          : `„${item.title}“ als Favorit auswählen`
+                      }
+                      className={`group flex flex-col rounded-xl border p-2.5 text-left transition-colors ${
+                        isSelected
+                          ? 'border-[#9275E8] bg-[#9275E8]/12'
+                          : 'border-[#30303A] bg-[#1E1E27] hover:border-[#4B4B5C]'
+                      }`}
+                    >
+                      <div className="relative w-full">
+                        <CinemaPoster media={item} compact />
+                        <div
+                          className={`absolute top-2 right-2 flex h-8 w-8 items-center justify-center rounded-lg border ${
+                            isSelected
+                              ? 'border-[#9275E8] bg-[#9275E8] text-[#101014]'
+                              : 'border-[#30303A] bg-[#101014]/80 text-[#A0A0AD]'
+                          }`}
+                        >
+                          {isSelected ? (
+                            <Check className="h-4 w-4" aria-hidden="true" />
+                          ) : (
+                            <Heart className="h-4 w-4" aria-hidden="true" />
+                          )}
+                        </div>
                       </div>
-                    </div>
-                    <p className="mt-2.5 font-display text-sm font-semibold text-[#F5F5F7] line-clamp-1">
-                      {item.title}
-                    </p>
-                    <p className="mt-0.5 text-xs text-[#A0A0AD] truncate">
-                      {item.mediaType === 'movie' ? 'Film' : 'Serie'} ·{' '}
-                      {item.releaseDate.slice(0, 4)}
-                    </p>
-                  </button>
-                );
-              })}
-            </div>
+                      <p className="mt-2.5 font-display text-sm font-semibold text-[#F5F5F7] line-clamp-1">
+                        {item.title}
+                      </p>
+                      <p className="mt-0.5 text-xs text-[#A0A0AD] truncate">
+                        {item.mediaType === 'movie' ? 'Film' : 'Serie'} ·{' '}
+                        {item.releaseDate.slice(0, 4) || '—'}
+                      </p>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
 
             {/* Navigation Footer */}
             <div className="flex flex-wrap items-center justify-between gap-4 border-t border-[#30303A] pt-6">

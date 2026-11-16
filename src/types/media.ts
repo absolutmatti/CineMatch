@@ -56,6 +56,7 @@ export interface FavoriteItem {
   mediaId: string;
   title: string;
   posterUrl?: string;
+  mediaSnapshot?: MediaItem;
   createdAt: string;
 }
 
