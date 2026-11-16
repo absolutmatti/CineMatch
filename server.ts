@@ -282,11 +282,20 @@ async function startServer() {
 
   // Health & capability status (never exposes raw secrets)
   app.get('/api/health', (_req: Request, res: Response) => {
+    const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+    const supabasePublishableKey =
+      process.env.VITE_SUPABASE_PUBLISHABLE_KEY || process.env.VITE_SUPABASE_ANON_KEY;
+
     res.json({
       ok: true,
       tmdbConfigured: Boolean(process.env.TMDB_API_KEY),
       supabaseConfigured: Boolean(
-        process.env.VITE_SUPABASE_URL && process.env.VITE_SUPABASE_ANON_KEY
+        supabaseUrl &&
+          supabaseUrl.startsWith('http') &&
+          !supabaseUrl.includes('YOUR_PROJECT_ID') &&
+          supabasePublishableKey &&
+          !supabasePublishableKey.includes('YOUR_PUBLISHABLE_KEY') &&
+          !supabasePublishableKey.startsWith('sb_secret_')
       ),
     });
   });
@@ -406,14 +415,15 @@ async function startServer() {
     }
   });
 
-  // Authenticated account deletion via Supabase Service Role (never trusts frontend user_id)
+  // Authenticated account deletion via Supabase Secret Key (sb_secret_...); never trusts frontend user_id
   app.post('/api/account/delete', async (req: Request, res: Response) => {
-    const supabaseUrl = process.env.VITE_SUPABASE_URL;
-    const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+    const supabaseSecretKey =
+      process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
     const authHeader = req.headers.authorization;
     const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
 
-    if (!supabaseUrl || !serviceRoleKey) {
+    if (!supabaseUrl || !supabaseSecretKey || supabaseSecretKey.startsWith('sb_publishable_')) {
       res.status(501).json({
         message: 'Serverseitige Supabase-Kontolöschung ist noch nicht konfiguriert.',
       });
@@ -426,7 +436,7 @@ async function startServer() {
     }
 
     try {
-      const adminClient = createClient(supabaseUrl, serviceRoleKey, {
+      const adminClient = createClient(supabaseUrl, supabaseSecretKey, {
         auth: { autoRefreshToken: false, persistSession: false },
       });
       const {
