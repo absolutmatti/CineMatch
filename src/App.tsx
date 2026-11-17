@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CATALOG_ITEMS } from './data/catalog';
 import { computeFavoriteGenres, generateRecommendations } from './engine/recommendationEngine';
-import { isSupabaseConfigured, supabase } from './lib/supabase';
+import { ensureSupabaseClient, isSupabaseConfigured } from './lib/supabase';
 import {
   deleteAccountSupabase,
   loadSupabaseWorkspace,
@@ -139,6 +139,7 @@ export default function App() {
   const [autoFocusDiscover, setAutoFocusDiscover] = useState(false);
   const [selectedMedia, setSelectedMedia] = useState<MediaItem | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
+  const [supabaseConfiguredState, setSupabaseConfiguredState] = useState(isSupabaseConfigured);
   const [backendStatus, setBackendStatus] = useState({
     tmdbConfigured: false,
     supabaseConfigured: isSupabaseConfigured,
@@ -156,7 +157,7 @@ export default function App() {
   }, []);
 
   const isUsingSupabaseSession = Boolean(
-    isSupabaseConfigured && appState.profile && appState.profile.id !== 'demo-user-01'
+    supabaseConfiguredState && appState.profile && appState.profile.id !== 'demo-user-01'
   );
 
   // Sync local storage for demo / offline resilience
@@ -164,17 +165,26 @@ export default function App() {
     savePersistedState(appState);
   }, [appState]);
 
-  // Check backend health & restore/subscribe to Supabase session
+  // Check backend health, hydrate runtime Supabase client if needed, & restore/subscribe to session
   useEffect(() => {
-    checkBackendHealth().then((health) => {
-      setBackendStatus({
-        tmdbConfigured: health.tmdbConfigured,
-        supabaseConfigured: isSupabaseConfigured || health.supabaseConfigured,
-      });
-    });
+    let active = true;
+    let unsubscribeAuth: (() => void) | undefined;
 
-    if (isSupabaseConfigured && supabase) {
-      loadSupabaseWorkspace().then((workspace) => {
+    Promise.all([checkBackendHealth(), ensureSupabaseClient()]).then(
+      async ([health, client]) => {
+        if (!active) return;
+
+        const hasClient = Boolean(client);
+        setSupabaseConfiguredState(hasClient);
+        setBackendStatus({
+          tmdbConfigured: health.tmdbConfigured,
+          supabaseConfigured: hasClient || health.supabaseConfigured,
+        });
+
+        if (!client) return;
+
+        const workspace = await loadSupabaseWorkspace();
+        if (!active) return;
         if (workspace) {
           setAppState((prev) => ({
             ...prev,
@@ -183,36 +193,38 @@ export default function App() {
             ratings: workspace.ratings,
           }));
         }
-      });
 
-      const {
-        data: { subscription },
-      } = supabase.auth.onAuthStateChange((event) => {
-        if (event === 'SIGNED_OUT') {
-          setAppState({
-            profile: null,
-            favorites: [],
-            ratings: [],
-            shownRecommendationIds: [],
-          });
-        } else if (event === 'SIGNED_IN') {
-          loadSupabaseWorkspace().then((workspace) => {
-            if (workspace) {
-              setAppState((prev) => ({
-                ...prev,
-                profile: workspace.profile,
-                favorites: workspace.favorites,
-                ratings: workspace.ratings,
-              }));
-            }
-          });
-        }
-      });
+        const {
+          data: { subscription },
+        } = client.auth.onAuthStateChange((event) => {
+          if (event === 'SIGNED_OUT') {
+            setAppState({
+              profile: null,
+              favorites: [],
+              ratings: [],
+              shownRecommendationIds: [],
+            });
+          } else if (event === 'SIGNED_IN') {
+            loadSupabaseWorkspace().then((ws) => {
+              if (active && ws) {
+                setAppState((prev) => ({
+                  ...prev,
+                  profile: ws.profile,
+                  favorites: ws.favorites,
+                  ratings: ws.ratings,
+                }));
+              }
+            });
+          }
+        });
+        unsubscribeAuth = () => subscription.unsubscribe();
+      }
+    );
 
-      return () => {
-        subscription.unsubscribe();
-      };
-    }
+    return () => {
+      active = false;
+      unsubscribeAuth?.();
+    };
   }, []);
 
   const expandCatalogPool = useCallback((items: MediaItem[]) => {
@@ -448,7 +460,9 @@ export default function App() {
   );
 
   const handleLogin = async (email: string, password: string) => {
-    if (isSupabaseConfigured) {
+    const client = await ensureSupabaseClient();
+    if (client) {
+      setSupabaseConfiguredState(true);
       const workspace = await signInSupabase(email, password);
       setAppState({
         profile: workspace.profile,
@@ -484,7 +498,9 @@ export default function App() {
     email: string,
     password: string
   ): Promise<{ requiresEmailConfirmation?: boolean }> => {
-    if (isSupabaseConfigured) {
+    const client = await ensureSupabaseClient();
+    if (client) {
+      setSupabaseConfiguredState(true);
       const result = await signUpSupabase(displayName, email, password);
       if (result.requiresEmailConfirmation || !result.workspace) {
         return { requiresEmailConfirmation: true };
@@ -512,7 +528,9 @@ export default function App() {
   };
 
   const handleResetPassword = async (email: string) => {
-    if (isSupabaseConfigured) {
+    const client = await ensureSupabaseClient();
+    if (client) {
+      setSupabaseConfiguredState(true);
       await resetPasswordSupabase(email);
     }
   };
@@ -702,10 +720,13 @@ export default function App() {
     if (isUsingSupabaseSession) {
       signOutSupabase().catch(() => {});
     }
-    setAppState((prev) => ({
-      ...prev,
+    clearPersistedState();
+    setAppState({
       profile: null,
-    }));
+      favorites: [],
+      ratings: [],
+      shownRecommendationIds: [],
+    });
   };
 
   const handleDeleteAccount = async () => {

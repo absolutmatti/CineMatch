@@ -1,4 +1,4 @@
-import { isSupabaseConfigured, supabase } from '../lib/supabase';
+import { ensureSupabaseClient, supabase } from '../lib/supabase';
 import type {
   FavoriteItem,
   FeedbackType,
@@ -87,37 +87,70 @@ function mapDbRating(row: Record<string, unknown>): UserRating {
 }
 
 export async function loadSupabaseWorkspace(): Promise<AuthResult | null> {
-  if (!supabase || !isSupabaseConfigured) return null;
+  const client = supabase ?? (await ensureSupabaseClient());
+  if (!client) return null;
 
   const {
     data: { session },
-  } = await supabase.auth.getSession();
+  } = await client.auth.getSession();
   if (!session?.user) return null;
 
   const user = session.user;
   const email = user.email ?? '';
 
   const [profileRes, favRes, ratingRes] = await Promise.all([
-    supabase.from('profiles').select('*').eq('id', user.id).single(),
-    supabase.from('favorites').select('*').eq('user_id', user.id).order('created_at', { ascending: false }),
-    supabase.from('ratings').select('*').eq('user_id', user.id),
+    client.from('profiles').select('*').eq('id', user.id).maybeSingle(),
+    client.from('favorites').select('*').eq('user_id', user.id).order('created_at', { ascending: false }),
+    client.from('ratings').select('*').eq('user_id', user.id),
   ]);
 
-  if (profileRes.error || !profileRes.data) {
-    return null;
+  let profileRow = profileRes.data;
+
+  // Self-heal missing profile row (e.g. account created before initial SQL migration)
+  if (!profileRow) {
+    const rawName =
+      (user.user_metadata?.display_name as string | undefined) ||
+      email.split('@')[0] ||
+      'Cinephile';
+    const cleanUsername =
+      rawName
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '.')
+        .replace(/^\.+|\.+$/g, '') || 'user';
+    const generatedUsername = `${cleanUsername}.${user.id.slice(0, 6)}`;
+
+    const { data: createdProfile, error: upsertError } = await client
+      .from('profiles')
+      .upsert(
+        {
+          id: user.id,
+          username: generatedUsername,
+          display_name: rawName,
+          onboarding_completed: false,
+        },
+        { onConflict: 'id' }
+      )
+      .select('*')
+      .single();
+
+    if (upsertError || !createdProfile) {
+      return null;
+    }
+    profileRow = createdProfile;
   }
 
   return {
-    profile: mapDbProfile(profileRes.data, email),
+    profile: mapDbProfile(profileRow, email),
     favorites: Array.isArray(favRes.data) ? favRes.data.map(mapDbFavorite) : [],
     ratings: Array.isArray(ratingRes.data) ? ratingRes.data.map(mapDbRating) : [],
   };
 }
 
 export async function signInSupabase(email: string, password: string): Promise<AuthResult> {
-  if (!supabase) throw new Error('SUPABASE_NOT_CONFIGURED');
+  const client = supabase ?? (await ensureSupabaseClient());
+  if (!client) throw new Error('SUPABASE_NOT_CONFIGURED');
 
-  const { error } = await supabase.auth.signInWithPassword({ email, password });
+  const { error } = await client.auth.signInWithPassword({ email, password });
   if (error) {
     throw new Error(translateSupabaseError(error.message));
   }
@@ -134,9 +167,10 @@ export async function signUpSupabase(
   email: string,
   password: string
 ): Promise<{ workspace: AuthResult | null; requiresEmailConfirmation: boolean }> {
-  if (!supabase) throw new Error('SUPABASE_NOT_CONFIGURED');
+  const client = supabase ?? (await ensureSupabaseClient());
+  if (!client) throw new Error('SUPABASE_NOT_CONFIGURED');
 
-  const { data, error } = await supabase.auth.signUp({
+  const { data, error } = await client.auth.signUp({
     email,
     password,
     options: {
@@ -157,8 +191,9 @@ export async function signUpSupabase(
 }
 
 export async function resetPasswordSupabase(email: string): Promise<void> {
-  if (!supabase) return;
-  const { error } = await supabase.auth.resetPasswordForEmail(email, {
+  const client = supabase ?? (await ensureSupabaseClient());
+  if (!client) return;
+  const { error } = await client.auth.resetPasswordForEmail(email, {
     redirectTo: window.location.origin,
   });
   if (error) {
@@ -167,8 +202,9 @@ export async function resetPasswordSupabase(email: string): Promise<void> {
 }
 
 export async function signOutSupabase(): Promise<void> {
-  if (!supabase) return;
-  await supabase.auth.signOut();
+  const client = supabase ?? (await ensureSupabaseClient());
+  if (!client) return;
+  await client.auth.signOut();
 }
 
 export async function updateProfileSupabase(
@@ -180,7 +216,8 @@ export async function updateProfileSupabase(
     onboardingCompleted?: boolean;
   }
 ): Promise<void> {
-  if (!supabase) return;
+  const client = supabase ?? (await ensureSupabaseClient());
+  if (!client) return;
   const payload: Record<string, unknown> = {};
   if (updates.displayName !== undefined) payload.display_name = updates.displayName;
   if (updates.username !== undefined) payload.username = updates.username;
@@ -191,7 +228,7 @@ export async function updateProfileSupabase(
     payload.onboarding_completed = updates.onboardingCompleted;
   }
 
-  const { error } = await supabase.from('profiles').update(payload).eq('id', userId);
+  const { error } = await client.from('profiles').update(payload).eq('id', userId);
   if (error) {
     throw new Error('Profiländerungen konnten nicht gespeichert werden.');
   }
@@ -202,10 +239,11 @@ export async function toggleFavoriteSupabase(
   media: MediaItem,
   currentlyFavorite: boolean
 ): Promise<void> {
-  if (!supabase) return;
+  const client = supabase ?? (await ensureSupabaseClient());
+  if (!client) return;
 
   if (currentlyFavorite) {
-    const { error } = await supabase
+    const { error } = await client
       .from('favorites')
       .delete()
       .eq('user_id', userId)
@@ -215,7 +253,7 @@ export async function toggleFavoriteSupabase(
     return;
   }
 
-  const { error } = await supabase.from('favorites').upsert(
+  const { error } = await client.from('favorites').upsert(
     {
       user_id: userId,
       tmdb_id: media.tmdbId,
@@ -233,9 +271,10 @@ export async function updateFavoriteSnapshotSupabase(
   userId: string,
   media: MediaItem
 ): Promise<void> {
-  if (!supabase) return;
+  const client = supabase ?? (await ensureSupabaseClient());
+  if (!client) return;
 
-  await supabase
+  await client
     .from('favorites')
     .update({
       title: media.title,
@@ -252,10 +291,11 @@ export async function saveFeedbackSupabase(
   media: MediaItem,
   feedback: FeedbackType | null
 ): Promise<void> {
-  if (!supabase) return;
+  const client = supabase ?? (await ensureSupabaseClient());
+  if (!client) return;
 
   if (!feedback) {
-    const { error } = await supabase
+    const { error } = await client
       .from('ratings')
       .delete()
       .eq('user_id', userId)
@@ -266,7 +306,7 @@ export async function saveFeedbackSupabase(
   }
 
   const numericRating = feedback === 'like' ? 1 : feedback === 'dislike' ? -1 : 0;
-  const { error } = await supabase.from('ratings').upsert(
+  const { error } = await client.from('ratings').upsert(
     {
       user_id: userId,
       tmdb_id: media.tmdbId,
@@ -283,7 +323,8 @@ export async function syncRecommendationsSupabase(
   userId: string,
   recs: RecommendationResult[]
 ): Promise<void> {
-  if (!supabase || recs.length === 0) return;
+  const client = supabase ?? (await ensureSupabaseClient());
+  if (!client || recs.length === 0) return;
 
   const rows = recs.slice(0, 12).map((rec) => ({
     user_id: userId,
@@ -294,16 +335,17 @@ export async function syncRecommendationsSupabase(
     last_shown_at: new Date().toISOString(),
   }));
 
-  await supabase
+  await client
     .from('recommendations')
     .upsert(rows, { onConflict: 'user_id,tmdb_id,media_type' });
 }
 
 export async function deleteAccountSupabase(): Promise<void> {
-  if (!supabase) return;
+  const client = supabase ?? (await ensureSupabaseClient());
+  if (!client) return;
   const {
     data: { session },
-  } = await supabase.auth.getSession();
+  } = await client.auth.getSession();
   if (!session?.access_token) return;
 
   const res = await fetch(`${API_BASE}/api/account/delete`, {
@@ -314,8 +356,15 @@ export async function deleteAccountSupabase(): Promise<void> {
   });
 
   if (!res.ok) {
-    throw new Error('Kontolöschung konnte serverseitig nicht abgeschlossen werden.');
+    let serverMessage = 'Kontolöschung konnte serverseitig nicht abgeschlossen werden.';
+    try {
+      const payload = (await res.json()) as { message?: string };
+      if (payload.message) serverMessage = payload.message;
+    } catch {
+      // Keep default German message
+    }
+    throw new Error(serverMessage);
   }
 
-  await supabase.auth.signOut();
+  await client.auth.signOut();
 }

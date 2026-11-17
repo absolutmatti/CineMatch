@@ -280,23 +280,50 @@ async function startServer() {
     next();
   });
 
+  function getPublicSupabaseConfig(): {
+    supabaseUrl: string | null;
+    supabasePublishableKey: string | null;
+  } {
+    const rawUrl = (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '').trim();
+    const rawKey = (
+      process.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
+      process.env.SUPABASE_PUBLISHABLE_KEY ||
+      process.env.VITE_SUPABASE_ANON_KEY ||
+      ''
+    ).trim();
+
+    const validUrl =
+      rawUrl.startsWith('http') && !rawUrl.includes('YOUR_PROJECT_ID') ? rawUrl : null;
+    const validKey =
+      rawKey.length > 0 &&
+      !rawKey.includes('YOUR_PUBLISHABLE_KEY') &&
+      !rawKey.startsWith('sb_secret_')
+        ? rawKey
+        : null;
+
+    return {
+      supabaseUrl: validUrl,
+      supabasePublishableKey: validKey,
+    };
+  }
+
   // Health & capability status (never exposes raw secrets)
   app.get('/api/health', (_req: Request, res: Response) => {
-    const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
-    const supabasePublishableKey =
-      process.env.VITE_SUPABASE_PUBLISHABLE_KEY || process.env.VITE_SUPABASE_ANON_KEY;
+    const { supabaseUrl, supabasePublishableKey } = getPublicSupabaseConfig();
 
     res.json({
       ok: true,
       tmdbConfigured: Boolean(process.env.TMDB_API_KEY),
-      supabaseConfigured: Boolean(
-        supabaseUrl &&
-          supabaseUrl.startsWith('http') &&
-          !supabaseUrl.includes('YOUR_PROJECT_ID') &&
-          supabasePublishableKey &&
-          !supabasePublishableKey.includes('YOUR_PUBLISHABLE_KEY') &&
-          !supabasePublishableKey.startsWith('sb_secret_')
-      ),
+      supabaseConfigured: Boolean(supabaseUrl && supabasePublishableKey),
+    });
+  });
+
+  // Public client configuration for runtime-injected containers (never exposes server secrets)
+  app.get('/api/public-config', (_req: Request, res: Response) => {
+    const { supabaseUrl, supabasePublishableKey } = getPublicSupabaseConfig();
+    res.json({
+      supabaseUrl,
+      supabasePublishableKey,
     });
   });
 
