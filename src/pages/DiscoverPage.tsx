@@ -29,6 +29,9 @@ export function DiscoverPage({
   const [mediaType, setMediaType] = useState<'all' | MediaType>('all');
   const [selectedGenre, setSelectedGenre] = useState<string>('Alle');
   const [isSearching, setIsSearching] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [page, setPage] = useState(1);
+  const [hasMore, setHasMore] = useState(false);
   const [results, setResults] = useState<MediaItem[]>(() =>
     searchCatalogMedia({ query: initialQuery, mediaType: 'all', genre: 'Alle' })
   );
@@ -36,6 +39,7 @@ export function DiscoverPage({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const loadMoreControllerRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     setRawQuery(initialQuery);
@@ -62,9 +66,13 @@ export function DiscoverPage({
 
   // Fetch live TMDB results (or curated catalog fallback) whenever filters settle
   useEffect(() => {
+    loadMoreControllerRef.current?.abort();
     const controller = new AbortController();
     let active = true;
     setIsSearching(true);
+    setIsLoadingMore(false);
+    setPage(1);
+    setHasMore(false);
     setErrorMessage(null);
 
     searchRemoteMedia(
@@ -72,6 +80,7 @@ export function DiscoverPage({
         query: debouncedQuery,
         mediaType,
         genre: selectedGenre,
+        page: 1,
       },
       controller.signal
     )
@@ -79,6 +88,8 @@ export function DiscoverPage({
         if (!active) return;
         setResults(res.items);
         setDataSource(res.source);
+        setPage(res.page);
+        setHasMore(res.hasMore);
         setIsSearching(false);
         if (res.items.length > 0 && onCatalogExpand) {
           onCatalogExpand(res.items);
@@ -94,6 +105,8 @@ export function DiscoverPage({
           })
         );
         setDataSource('catalog');
+        setPage(1);
+        setHasMore(false);
         setErrorMessage('Live-Suche momentan nicht erreichbar – lokaler Katalog wird angezeigt.');
         setIsSearching(false);
       });
@@ -101,8 +114,51 @@ export function DiscoverPage({
     return () => {
       active = false;
       controller.abort();
+      loadMoreControllerRef.current?.abort();
     };
   }, [debouncedQuery, mediaType, selectedGenre, onCatalogExpand]);
+
+  const handleLoadMore = async () => {
+    if (isLoadingMore || !hasMore || dataSource !== 'tmdb') return;
+    loadMoreControllerRef.current?.abort();
+    const controller = new AbortController();
+    loadMoreControllerRef.current = controller;
+    const nextPage = page + 1;
+    setIsLoadingMore(true);
+
+    try {
+      const res = await searchRemoteMedia(
+        {
+          query: debouncedQuery,
+          mediaType,
+          genre: selectedGenre,
+          page: nextPage,
+        },
+        controller.signal
+      );
+
+      if (res.source === 'tmdb' && res.items.length > 0) {
+        setResults((prev) => {
+          const seen = new Set(prev.map((item) => item.id));
+          const uniqueIncoming = res.items.filter((item) => !seen.has(item.id));
+          return [...prev, ...uniqueIncoming];
+        });
+        setPage(res.page);
+        setHasMore(res.hasMore);
+        if (onCatalogExpand) {
+          onCatalogExpand(res.items);
+        }
+      } else {
+        setHasMore(false);
+      }
+    } catch (err: unknown) {
+      if ((err as Error)?.name !== 'AbortError') {
+        setHasMore(false);
+      }
+    } finally {
+      setIsLoadingMore(false);
+    }
+  };
 
   const favoriteIds = useMemo(() => new Set(favorites.map((f) => f.mediaId)), [favorites]);
 
@@ -251,16 +307,31 @@ export function DiscoverPage({
           ))}
         </div>
       ) : results.length > 0 ? (
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
-          {results.map((item) => (
-            <MediaCard
-              key={item.id}
-              media={item}
-              isFavorite={favoriteIds.has(item.id)}
-              onOpenDetail={onOpenDetail}
-              onToggleFavorite={onToggleFavorite}
-            />
-          ))}
+        <div className="space-y-8">
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
+            {results.map((item) => (
+              <MediaCard
+                key={item.id}
+                media={item}
+                isFavorite={favoriteIds.has(item.id)}
+                onOpenDetail={onOpenDetail}
+                onToggleFavorite={onToggleFavorite}
+              />
+            ))}
+          </div>
+
+          {hasMore && dataSource === 'tmdb' && (
+            <div className="flex justify-center pt-2">
+              <button
+                type="button"
+                onClick={handleLoadMore}
+                disabled={isLoadingMore}
+                className="inline-flex min-h-[44px] items-center justify-center rounded-xl border border-[#30303A] bg-[#17171D] px-6 py-2.5 text-sm font-medium text-[#F5F5F7] transition-colors hover:border-[#9275E8] hover:bg-[#1E1E27] disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {isLoadingMore ? 'Weitere Titel werden geladen…' : 'Weitere Titel laden'}
+              </button>
+            </div>
+          )}
         </div>
       ) : (
         <EmptyState

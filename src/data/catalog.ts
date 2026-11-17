@@ -440,6 +440,24 @@ export const CATALOG_ITEMS: MediaItem[] = [
   },
 ];
 
+const BASE_TMDB_GENRES = [
+  'Action',
+  'Abenteuer',
+  'Animation',
+  'Komödie',
+  'Krimi',
+  'Dokumentation',
+  'Drama',
+  'Familie',
+  'Fantasy',
+  'Historie',
+  'Horror',
+  'Mystery',
+  'Romantik',
+  'Science-Fiction',
+  'Thriller',
+];
+
 export const ALL_GENRES: string[] = Array.from(
-  new Set(CATALOG_ITEMS.flatMap((item) => item.genres))
+  new Set([...BASE_TMDB_GENRES, ...CATALOG_ITEMS.flatMap((item) => item.genres)])
 ).sort((a, b) => a.localeCompare(b, 'de'));

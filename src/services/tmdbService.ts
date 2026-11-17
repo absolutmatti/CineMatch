@@ -5,11 +5,14 @@ export interface SearchMediaParams {
   query?: string;
   mediaType?: 'all' | MediaType;
   genre?: string;
+  page?: number;
 }
 
 export interface TmdbSearchResponse {
   items: MediaItem[];
   source: 'tmdb' | 'catalog';
+  page: number;
+  hasMore: boolean;
 }
 
 export interface TmdbDetailsResponse {
@@ -20,7 +23,7 @@ export interface TmdbDetailsResponse {
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '') ?? '';
 
-const searchCache = new Map<string, MediaItem[]>();
+const searchCache = new Map<string, TmdbSearchResponse>();
 const detailsCache = new Map<string, TmdbDetailsResponse>();
 
 export function searchCatalogMedia({
@@ -56,53 +59,74 @@ export function getMediaById(id: string): MediaItem | undefined {
 }
 
 /**
- * Fetches live TMDB search or trending results via the secure server-side proxy (/api/tmdb/*).
+ * Fetches live TMDB search, genre discovery, or trending results via the secure server-side proxy (/api/tmdb/*).
  * Automatically falls back to the local curated catalog if TMDB is unavailable or unconfigured.
  */
 export async function searchRemoteMedia(
-  { query = '', mediaType = 'all', genre = 'Alle' }: SearchMediaParams,
+  { query = '', mediaType = 'all', genre = 'Alle', page = 1 }: SearchMediaParams,
   signal?: AbortSignal
 ): Promise<TmdbSearchResponse> {
   const trimmed = query.trim();
-  const cacheKey = `${mediaType}:${genre}:${trimmed.toLowerCase()}`;
+  const safePage = Math.max(1, page);
+  const cacheKey = `${mediaType}:${genre}:${safePage}:${trimmed.toLowerCase()}`;
 
   const cached = searchCache.get(cacheKey);
   if (cached) {
-    return { items: cached, source: 'tmdb' };
+    return cached;
   }
 
   try {
-    const endpoint = trimmed
-      ? `${API_BASE}/api/tmdb/search?query=${encodeURIComponent(trimmed)}&type=${mediaType}`
-      : `${API_BASE}/api/tmdb/trending?type=${mediaType}`;
+    let endpoint: string;
+    if (trimmed) {
+      endpoint = `${API_BASE}/api/tmdb/search?query=${encodeURIComponent(trimmed)}&type=${mediaType}&page=${safePage}`;
+    } else if (genre && genre !== 'Alle') {
+      endpoint = `${API_BASE}/api/tmdb/discover?type=${mediaType}&genre=${encodeURIComponent(genre)}&page=${safePage}`;
+    } else {
+      endpoint = `${API_BASE}/api/tmdb/trending?type=${mediaType}&page=${safePage}`;
+    }
 
     const response = await fetch(endpoint, { signal });
     if (!response.ok) {
       throw new Error(`HTTP_${response.status}`);
     }
 
-    const data = (await response.json()) as { items?: MediaItem[]; fallback?: boolean };
-    if (data.fallback || !Array.isArray(data.items) || data.items.length === 0) {
+    const data = (await response.json()) as {
+      items?: MediaItem[];
+      page?: number;
+      hasMore?: boolean;
+      fallback?: boolean;
+    };
+    if (data.fallback || !Array.isArray(data.items) || (safePage === 1 && data.items.length === 0)) {
       return {
-        items: searchCatalogMedia({ query: trimmed, mediaType, genre }),
+        items: safePage === 1 ? searchCatalogMedia({ query: trimmed, mediaType, genre }) : [],
         source: 'catalog',
+        page: safePage,
+        hasMore: false,
       };
     }
 
     const filtered =
-      genre === 'Alle'
-        ? data.items
-        : data.items.filter((item) => item.genres.includes(genre));
+      trimmed && genre !== 'Alle'
+        ? data.items.filter((item) => item.genres.includes(genre))
+        : data.items;
 
-    searchCache.set(cacheKey, filtered);
-    return { items: filtered, source: 'tmdb' };
+    const result: TmdbSearchResponse = {
+      items: filtered,
+      source: 'tmdb',
+      page: Number(data.page || safePage),
+      hasMore: Boolean(data.hasMore),
+    };
+    searchCache.set(cacheKey, result);
+    return result;
   } catch (err) {
     if ((err as Error)?.name === 'AbortError') {
       throw err;
     }
     return {
-      items: searchCatalogMedia({ query: trimmed, mediaType, genre }),
+      items: safePage === 1 ? searchCatalogMedia({ query: trimmed, mediaType, genre }) : [],
       source: 'catalog',
+      page: safePage,
+      hasMore: false,
     };
   }
 }

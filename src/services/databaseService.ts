@@ -201,6 +201,19 @@ export async function resetPasswordSupabase(email: string): Promise<void> {
   }
 }
 
+export async function updatePasswordSupabase(newPassword: string): Promise<void> {
+  const client = supabase ?? (await ensureSupabaseClient());
+  if (!client) throw new Error('SUPABASE_NOT_CONFIGURED');
+  const { error } = await client.auth.updateUser({ password: newPassword });
+  if (error) {
+    const lower = error.message.toLowerCase();
+    if (lower.includes('different from the old password') || lower.includes('same password')) {
+      throw new Error('Das neue Passwort muss sich vom bisherigen Passwort unterscheiden.');
+    }
+    throw new Error(translateSupabaseError(error.message));
+  }
+}
+
 export async function signOutSupabase(): Promise<void> {
   const client = supabase ?? (await ensureSupabaseClient());
   if (!client) return;

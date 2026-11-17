@@ -13,6 +13,7 @@ import {
   syncRecommendationsSupabase,
   toggleFavoriteSupabase,
   updateFavoriteSnapshotSupabase,
+  updatePasswordSupabase,
   updateProfileSupabase,
 } from './services/databaseService';
 import {
@@ -38,6 +39,7 @@ import type {
 import { Navigation } from './components/Navigation';
 import { Footer } from './components/Footer';
 import { MediaDetailModal } from './components/MediaDetailModal';
+import { PasswordRecoveryModal } from './components/PasswordRecoveryModal';
 import { AuthPage } from './pages/AuthPage';
 import { OnboardingPage } from './pages/OnboardingPage';
 import { DashboardPage } from './pages/DashboardPage';
@@ -139,6 +141,7 @@ export default function App() {
   const [autoFocusDiscover, setAutoFocusDiscover] = useState(false);
   const [selectedMedia, setSelectedMedia] = useState<MediaItem | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
+  const [showPasswordRecovery, setShowPasswordRecovery] = useState(false);
   const [supabaseConfiguredState, setSupabaseConfiguredState] = useState(isSupabaseConfigured);
   const [backendStatus, setBackendStatus] = useState({
     tmdbConfigured: false,
@@ -146,8 +149,14 @@ export default function App() {
   });
 
   const enrichedFavoriteIdsRef = useRef<Set<string>>(new Set());
+  const discoveredGenresRef = useRef<Set<string>>(new Set());
   const trendingLoadedRef = useRef(false);
   const isMountedRef = useRef(true);
+  const initialRecoveryUrlRef = useRef(
+    typeof window !== 'undefined' &&
+      (window.location.hash.includes('type=recovery') ||
+        new URLSearchParams(window.location.search).get('type') === 'recovery')
+  );
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -192,12 +201,29 @@ export default function App() {
             favorites: workspace.favorites,
             ratings: workspace.ratings,
           }));
+          if (initialRecoveryUrlRef.current) {
+            setShowPasswordRecovery(true);
+            initialRecoveryUrlRef.current = false;
+          }
         }
 
         const {
           data: { subscription },
         } = client.auth.onAuthStateChange((event) => {
-          if (event === 'SIGNED_OUT') {
+          if (event === 'PASSWORD_RECOVERY') {
+            setShowPasswordRecovery(true);
+            loadSupabaseWorkspace().then((ws) => {
+              if (active && ws) {
+                setAppState((prev) => ({
+                  ...prev,
+                  profile: ws.profile,
+                  favorites: ws.favorites,
+                  ratings: ws.ratings,
+                }));
+              }
+            });
+          } else if (event === 'SIGNED_OUT') {
+            setShowPasswordRecovery(false);
             setAppState({
               profile: null,
               favorites: [],
@@ -269,6 +295,32 @@ export default function App() {
     if (!trendingLoadedRef.current) {
       trendingLoadedRef.current = true;
       searchRemoteMedia({ query: '', mediaType: 'all' })
+        .then((res) => {
+          if (isMountedRef.current && res.items.length > 0) {
+            expandCatalogPool(res.items);
+          }
+        })
+        .catch(() => {});
+    }
+
+    // Also pull live TMDB discover candidates for the user's top favorite genres
+    const genreCounts = new Map<string, number>();
+    for (const fav of appState.favorites) {
+      const genres =
+        fav.mediaSnapshot?.genres ?? CATALOG_ITEMS.find((c) => c.id === fav.mediaId)?.genres ?? [];
+      for (const genre of genres) {
+        genreCounts.set(genre, (genreCounts.get(genre) ?? 0) + 1);
+      }
+    }
+    const topGenres = Array.from(genreCounts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 2)
+      .map(([genre]) => genre);
+
+    for (const genre of topGenres) {
+      if (discoveredGenresRef.current.has(genre)) continue;
+      discoveredGenresRef.current.add(genre);
+      searchRemoteMedia({ query: '', mediaType: 'all', genre, page: 1 })
         .then((res) => {
           if (isMountedRef.current && res.items.length > 0) {
             expandCatalogPool(res.items);
@@ -744,29 +796,48 @@ export default function App() {
     });
   };
 
+  const passwordRecoveryModal = (
+    <PasswordRecoveryModal
+      isOpen={showPasswordRecovery}
+      onSavePassword={updatePasswordSupabase}
+      onClose={() => {
+        setShowPasswordRecovery(false);
+        if (typeof window !== 'undefined' && window.location.hash.includes('type=recovery')) {
+          window.history.replaceState(null, '', window.location.pathname + window.location.search);
+        }
+      }}
+    />
+  );
+
   // Route Guard 1: Unauthenticated -> Auth Page
   if (!appState.profile) {
     return (
-      <AuthPage
-        onLogin={handleLogin}
-        onRegister={handleRegister}
-        onResetPassword={handleResetPassword}
-        onDemoLogin={handleDemoLogin}
-      />
+      <>
+        <AuthPage
+          onLogin={handleLogin}
+          onRegister={handleRegister}
+          onResetPassword={handleResetPassword}
+          onDemoLogin={handleDemoLogin}
+        />
+        {passwordRecoveryModal}
+      </>
     );
   }
 
   // Route Guard 2: Authenticated, Onboarding incomplete -> Onboarding Page
   if (!appState.profile.onboardingCompleted) {
     return (
-      <OnboardingPage
-        displayName={appState.profile.displayName}
-        favorites={appState.favorites}
-        knownCatalog={mergedCatalog}
-        onToggleFavorite={handleToggleFavorite}
-        onComplete={handleCompleteOnboarding}
-        onCatalogExpand={expandCatalogPool}
-      />
+      <>
+        <OnboardingPage
+          displayName={appState.profile.displayName}
+          favorites={appState.favorites}
+          knownCatalog={mergedCatalog}
+          onToggleFavorite={handleToggleFavorite}
+          onComplete={handleCompleteOnboarding}
+          onCatalogExpand={expandCatalogPool}
+        />
+        {passwordRecoveryModal}
+      </>
     );
   }
 
@@ -868,6 +939,8 @@ export default function App() {
         onFeedback={handleFeedback}
         onMediaEnriched={handleMediaEnriched}
       />
+
+      {passwordRecoveryModal}
     </div>
   );
 }

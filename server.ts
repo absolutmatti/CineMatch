@@ -49,6 +49,29 @@ const TMDB_GENRE_MAP: Record<number, string> = {
   10768: 'Politik & Krieg',
 };
 
+const GENRE_NAME_TO_TMDB_IDS: Record<string, { movie?: number; tv?: number }> = {
+  Action: { movie: 28, tv: 10759 },
+  'Action & Abenteuer': { movie: 28, tv: 10759 },
+  Abenteuer: { movie: 12, tv: 10759 },
+  Animation: { movie: 16, tv: 16 },
+  Komödie: { movie: 35, tv: 35 },
+  Krimi: { movie: 80, tv: 80 },
+  Dokumentation: { movie: 99, tv: 99 },
+  Drama: { movie: 18, tv: 18 },
+  Familie: { movie: 10751, tv: 10751 },
+  Fantasy: { movie: 14, tv: 10765 },
+  Historie: { movie: 36, tv: 36 },
+  Horror: { movie: 27, tv: 9648 },
+  Musik: { movie: 10402 },
+  Mystery: { movie: 9648, tv: 9648 },
+  Romantik: { movie: 10749, tv: 10749 },
+  'Science-Fiction': { movie: 878, tv: 10765 },
+  'Science-Fiction & Fantasy': { movie: 878, tv: 10765 },
+  Thriller: { movie: 53, tv: 9648 },
+  Kriegsfilm: { movie: 10752, tv: 10768 },
+  Western: { movie: 37, tv: 37 },
+};
+
 interface NormalizedPosterTheme {
   gradientFrom: string;
   gradientTo: string;
@@ -331,15 +354,15 @@ async function startServer() {
   app.get('/api/tmdb/search', async (req: Request, res: Response) => {
     const query = String(req.query.query || '').trim();
     const type = String(req.query.type || 'all');
-    const page = String(req.query.page || '1');
+    const pageNum = Math.max(1, Number(req.query.page || 1) || 1);
 
     if (!process.env.TMDB_API_KEY) {
-      res.json({ items: [], fallback: true, configured: false });
+      res.json({ items: [], page: 1, hasMore: false, fallback: true, configured: false });
       return;
     }
 
     if (!query) {
-      res.json({ items: [], source: 'tmdb' });
+      res.json({ items: [], page: 1, hasMore: false, source: 'tmdb' });
       return;
     }
 
@@ -351,9 +374,13 @@ async function startServer() {
             ? '/search/tv'
             : '/search/multi';
 
-      const payload = await fetchTmdbJson<{ results?: Array<Record<string, unknown>> }>(endpoint, {
+      const payload = await fetchTmdbJson<{
+        results?: Array<Record<string, unknown>>;
+        page?: number;
+        total_pages?: number;
+      }>(endpoint, {
         query,
-        page,
+        page: String(pageNum),
         include_adult: 'false',
       });
 
@@ -362,10 +389,20 @@ async function startServer() {
         .map((row) => normalizeTmdbItem(row, explicitType))
         .filter((item): item is NormalizedMediaItem => Boolean(item));
 
-      res.json({ items, source: 'tmdb' });
+      const currentPage = Number(payload.page || pageNum);
+      const totalPages = Number(payload.total_pages || 1);
+
+      res.json({
+        items,
+        page: currentPage,
+        hasMore: currentPage < totalPages,
+        source: 'tmdb',
+      });
     } catch {
       res.status(503).json({
         items: [],
+        page: pageNum,
+        hasMore: false,
         fallback: true,
         message: 'TMDB-Suche vorübergehend nicht verfügbar.',
       });
@@ -374,8 +411,9 @@ async function startServer() {
 
   // Secure Server-Side TMDB Trending
   app.get('/api/tmdb/trending', async (req: Request, res: Response) => {
+    const pageNum = Math.max(1, Number(req.query.page || 1) || 1);
     if (!process.env.TMDB_API_KEY) {
-      res.json({ items: [], fallback: true, configured: false });
+      res.json({ items: [], page: 1, hasMore: false, fallback: true, configured: false });
       return;
     }
 
@@ -383,20 +421,123 @@ async function startServer() {
     const validType = type === 'movie' || type === 'tv' ? type : 'all';
 
     try {
-      const payload = await fetchTmdbJson<{ results?: Array<Record<string, unknown>> }>(
-        `/trending/${validType}/week`
-      );
+      const payload = await fetchTmdbJson<{
+        results?: Array<Record<string, unknown>>;
+        page?: number;
+        total_pages?: number;
+      }>(`/trending/${validType}/week`, {
+        page: String(pageNum),
+      });
       const explicitType = validType === 'movie' || validType === 'tv' ? validType : undefined;
       const items = (payload.results || [])
         .map((row) => normalizeTmdbItem(row, explicitType))
         .filter((item): item is NormalizedMediaItem => Boolean(item));
 
-      res.json({ items, source: 'tmdb' });
+      const currentPage = Number(payload.page || pageNum);
+      const totalPages = Number(payload.total_pages || 1);
+
+      res.json({
+        items,
+        page: currentPage,
+        hasMore: currentPage < totalPages,
+        source: 'tmdb',
+      });
     } catch {
       res.status(503).json({
         items: [],
+        page: pageNum,
+        hasMore: false,
         fallback: true,
         message: 'TMDB-Trends vorübergehend nicht verfügbar.',
+      });
+    }
+  });
+
+  // Secure Server-Side TMDB Genre Discovery (/discover/movie & /discover/tv)
+  app.get('/api/tmdb/discover', async (req: Request, res: Response) => {
+    const type = String(req.query.type || 'all');
+    const genreName = String(req.query.genre || '').trim();
+    const pageNum = Math.max(1, Number(req.query.page || 1) || 1);
+
+    if (!process.env.TMDB_API_KEY) {
+      res.json({ items: [], page: 1, hasMore: false, fallback: true, configured: false });
+      return;
+    }
+
+    const genreMapping = genreName && genreName !== 'Alle' ? GENRE_NAME_TO_TMDB_IDS[genreName] : undefined;
+
+    try {
+      const fetchMovieDiscover = async () => {
+        if (type === 'tv') return { items: [] as NormalizedMediaItem[], hasMore: false };
+        const params: Record<string, string> = {
+          sort_by: 'popularity.desc',
+          'vote_count.gte': '100',
+          include_adult: 'false',
+          page: String(pageNum),
+        };
+        if (genreMapping?.movie) {
+          params.with_genres = String(genreMapping.movie);
+        }
+        const payload = await fetchTmdbJson<{
+          results?: Array<Record<string, unknown>>;
+          page?: number;
+          total_pages?: number;
+        }>('/discover/movie', params);
+        const items = (payload.results || [])
+          .map((row) => normalizeTmdbItem(row, 'movie'))
+          .filter((item): item is NormalizedMediaItem => Boolean(item));
+        return {
+          items,
+          hasMore: Number(payload.page || pageNum) < Number(payload.total_pages || 1),
+        };
+      };
+
+      const fetchTvDiscover = async () => {
+        if (type === 'movie') return { items: [] as NormalizedMediaItem[], hasMore: false };
+        const params: Record<string, string> = {
+          sort_by: 'popularity.desc',
+          'vote_count.gte': '50',
+          include_adult: 'false',
+          page: String(pageNum),
+        };
+        if (genreMapping?.tv) {
+          params.with_genres = String(genreMapping.tv);
+        } else if (genreMapping && !genreMapping.tv) {
+          // Genre only exists on movies in TMDB (e.g. Musik)
+          return { items: [] as NormalizedMediaItem[], hasMore: false };
+        }
+        const payload = await fetchTmdbJson<{
+          results?: Array<Record<string, unknown>>;
+          page?: number;
+          total_pages?: number;
+        }>('/discover/tv', params);
+        const items = (payload.results || [])
+          .map((row) => normalizeTmdbItem(row, 'tv'))
+          .filter((item): item is NormalizedMediaItem => Boolean(item));
+        return {
+          items,
+          hasMore: Number(payload.page || pageNum) < Number(payload.total_pages || 1),
+        };
+      };
+
+      const [movieRes, tvRes] = await Promise.all([fetchMovieDiscover(), fetchTvDiscover()]);
+      const combined = [...movieRes.items, ...tvRes.items].sort(
+        (a, b) => b.popularity - a.popularity || b.voteAverage - a.voteAverage
+      );
+
+      res.json({
+        items: combined,
+        page: pageNum,
+        hasMore: movieRes.hasMore || tvRes.hasMore,
+        source: 'tmdb',
+      });
+    } catch {
+      res.status(503).json({
+        items: [],
+        page: pageNum,
+        hasMore: false,
+        fallback: true,
+        message: 'TMDB-Genre-Entdeckung vorübergehend nicht verfügbar.',
       });
     }
   });
