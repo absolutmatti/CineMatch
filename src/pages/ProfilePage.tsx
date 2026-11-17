@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { Check, Film, LogOut, Sliders, Trash2, Tv, User } from 'lucide-react';
 import type { FavoriteItem, GenreStat, MediaType, UserProfile, UserRating } from '../types/media';
 
@@ -11,10 +11,10 @@ interface ProfilePageProps {
     displayName: string;
     username: string;
     preferredMediaType: 'all' | MediaType;
-  }) => void;
+  }) => Promise<void> | void;
   onRestartOnboarding: () => void;
   onSignOut: () => void;
-  onDeleteAccount: () => void;
+  onDeleteAccount: () => Promise<void> | void;
 }
 
 export function ProfilePage({
@@ -32,15 +32,23 @@ export function ProfilePage({
   const [preferredMediaType, setPreferredMediaType] = useState<'all' | MediaType>(
     profile.preferredMediaType
   );
+  const [isSaving, setIsSaving] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [savedNotice, setSavedNotice] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+
+  useEffect(() => {
+    setDisplayName(profile.displayName);
+    setUsername(profile.username);
+    setPreferredMediaType(profile.preferredMediaType);
+  }, [profile.displayName, profile.username, profile.preferredMediaType]);
 
   const movieCount = favorites.filter((f) => f.mediaType === 'movie').length;
   const tvCount = favorites.filter((f) => f.mediaType === 'tv').length;
   const topGenre = favoriteGenres[0]?.genre ?? 'Noch offen';
 
-  const handleSave = (event: FormEvent) => {
+  const handleSave = async (event: FormEvent) => {
     event.preventDefault();
     setFormError(null);
     setSavedNotice(false);
@@ -54,13 +62,22 @@ export function ProfilePage({
       return;
     }
 
-    onUpdateProfile({
-      displayName: displayName.trim(),
-      username: username.trim().toLowerCase().replace(/\s+/g, '.'),
-      preferredMediaType,
-    });
-    setSavedNotice(true);
-    window.setTimeout(() => setSavedNotice(false), 3000);
+    setIsSaving(true);
+    try {
+      await onUpdateProfile({
+        displayName: displayName.trim(),
+        username: username.trim().toLowerCase().replace(/\s+/g, '.'),
+        preferredMediaType,
+      });
+      setSavedNotice(true);
+      window.setTimeout(() => setSavedNotice(false), 3000);
+    } catch (err) {
+      setFormError(
+        (err as Error).message || 'Profiländerungen konnten nicht gespeichert werden.'
+      );
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const initials = profile.displayName
@@ -235,9 +252,10 @@ export function ProfilePage({
 
               <button
                 type="submit"
-                className="inline-flex min-h-[42px] items-center justify-center rounded-lg bg-[#9275E8] px-5 py-2 text-sm font-semibold text-[#101014] transition-colors hover:bg-[#B29AF5]"
+                disabled={isSaving}
+                className="inline-flex min-h-[42px] items-center justify-center rounded-lg bg-[#9275E8] px-5 py-2 text-sm font-semibold text-[#101014] transition-colors hover:bg-[#B29AF5] disabled:cursor-not-allowed disabled:opacity-60"
               >
-                Profil speichern
+                {isSaving ? 'Speichern…' : 'Profil speichern'}
               </button>
             </div>
           </form>
@@ -332,13 +350,24 @@ export function ProfilePage({
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  setShowDeleteConfirm(false);
-                  onDeleteAccount();
+                disabled={isDeleting}
+                onClick={async () => {
+                  setIsDeleting(true);
+                  try {
+                    await onDeleteAccount();
+                    setShowDeleteConfirm(false);
+                  } catch (err) {
+                    setShowDeleteConfirm(false);
+                    setFormError(
+                      (err as Error).message || 'Kontolöschung konnte nicht abgeschlossen werden.'
+                    );
+                  } finally {
+                    setIsDeleting(false);
+                  }
                 }}
-                className="min-h-[40px] rounded-lg bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-500"
+                className="min-h-[40px] rounded-lg bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-500 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                Endgültig löschen
+                {isDeleting ? 'Wird gelöscht…' : 'Endgültig löschen'}
               </button>
             </div>
           </div>

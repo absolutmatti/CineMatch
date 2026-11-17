@@ -126,3 +126,44 @@ test('computeFavoriteGenres aggregates genres accurately', () => {
   assert.equal(sciFi?.count, 2);
   assert.equal(drama?.count, 2);
 });
+
+test('unknown creator placeholders do not produce fake director matches', () => {
+  const seedItem = {
+    ...CATALOG_ITEMS[0],
+    id: 'movie-999001',
+    tmdbId: 999001,
+    title: 'Seed Unbekannt',
+    directorOrCreator: 'Regie unbekannt',
+    cast: [],
+    keywords: ['zeitreise'],
+  };
+  const candidateItem = {
+    ...CATALOG_ITEMS[1],
+    id: 'movie-999002',
+    tmdbId: 999002,
+    title: 'Kandidat Unbekannt',
+    directorOrCreator: 'Regie unbekannt',
+    cast: [],
+    keywords: ['ermittlung'],
+  };
+
+  const results = generateRecommendations({
+    catalog: [seedItem, candidateItem],
+    favorites: [
+      {
+        id: 'fav-999001',
+        userId: 'user-test',
+        tmdbId: 999001,
+        mediaType: 'movie',
+        mediaId: 'movie-999001',
+        title: seedItem.title,
+        createdAt: '2026-01-01T00:00:00.000Z',
+      },
+    ],
+    limit: 5,
+  });
+
+  assert.equal(results.length, 1);
+  assert.equal(results[0].breakdown.crewCastScore, 0);
+  assert.equal(results[0].reason.includes('Regie unbekannt'), false);
+});

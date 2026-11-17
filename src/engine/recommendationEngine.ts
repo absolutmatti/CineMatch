@@ -43,6 +43,17 @@ function overlapList(a: string[], b: string[]): string[] {
   return a.filter((item) => setB.has(item.toLowerCase()));
 }
 
+function isKnownCreator(name: string | undefined): boolean {
+  if (!name) return false;
+  const trimmed = name.trim().toLowerCase();
+  return (
+    trimmed.length > 0 &&
+    trimmed !== 'regie unbekannt' &&
+    trimmed !== 'creator unbekannt' &&
+    trimmed !== 'unbekannt'
+  );
+}
+
 function computePairSimilarity(
   candidate: MediaItem,
   seed: MediaItem,
@@ -61,9 +72,17 @@ function computePairSimilarity(
   const genreScore = jaccardSimilarity(candidate.genres, seed.genres);
   const keywordsScore = jaccardSimilarity(candidate.keywords, seed.keywords);
 
-  const candidatePeople = [candidate.directorOrCreator, ...candidate.cast];
-  const seedPeople = [seed.directorOrCreator, ...seed.cast];
+  const candidatePeople = [
+    ...(isKnownCreator(candidate.directorOrCreator) ? [candidate.directorOrCreator] : []),
+    ...candidate.cast,
+  ];
+  const seedPeople = [
+    ...(isKnownCreator(seed.directorOrCreator) ? [seed.directorOrCreator] : []),
+    ...seed.cast,
+  ];
   const sameDirector =
+    isKnownCreator(candidate.directorOrCreator) &&
+    isKnownCreator(seed.directorOrCreator) &&
     candidate.directorOrCreator.toLowerCase() === seed.directorOrCreator.toLowerCase();
   const rawCrewCast = jaccardSimilarity(candidatePeople, seedPeople);
   const crewCastScore = Math.min(1, rawCrewCast + (sameDirector ? 0.55 : 0));
@@ -102,7 +121,11 @@ function buildMetadataReason(
   matchedKeywords: string[],
   topGenreNames: string[]
 ): string {
-  if (candidate.directorOrCreator === bestSeed.directorOrCreator) {
+  if (
+    isKnownCreator(candidate.directorOrCreator) &&
+    isKnownCreator(bestSeed.directorOrCreator) &&
+    candidate.directorOrCreator.toLowerCase() === bestSeed.directorOrCreator.toLowerCase()
+  ) {
     return `Von ${candidate.directorOrCreator} – ähnlich wie dein Favorit „${bestSeed.title}“.`;
   }
   if (matchedCrewOrCast.length > 0) {

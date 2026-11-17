@@ -229,6 +229,24 @@ export async function toggleFavoriteSupabase(
   if (error) throw new Error('Favorit konnte nicht gespeichert werden.');
 }
 
+export async function updateFavoriteSnapshotSupabase(
+  userId: string,
+  media: MediaItem
+): Promise<void> {
+  if (!supabase) return;
+
+  await supabase
+    .from('favorites')
+    .update({
+      title: media.title,
+      poster_path: media.posterUrl ?? null,
+      metadata: media,
+    })
+    .eq('user_id', userId)
+    .eq('tmdb_id', media.tmdbId)
+    .eq('media_type', media.mediaType);
+}
+
 export async function saveFeedbackSupabase(
   userId: string,
   media: MediaItem,
@@ -237,17 +255,18 @@ export async function saveFeedbackSupabase(
   if (!supabase) return;
 
   if (!feedback) {
-    await supabase
+    const { error } = await supabase
       .from('ratings')
       .delete()
       .eq('user_id', userId)
       .eq('tmdb_id', media.tmdbId)
       .eq('media_type', media.mediaType);
+    if (error) throw new Error('Bewertung konnte nicht zurückgesetzt werden.');
     return;
   }
 
   const numericRating = feedback === 'like' ? 1 : feedback === 'dislike' ? -1 : 0;
-  await supabase.from('ratings').upsert(
+  const { error } = await supabase.from('ratings').upsert(
     {
       user_id: userId,
       tmdb_id: media.tmdbId,
@@ -257,6 +276,7 @@ export async function saveFeedbackSupabase(
     },
     { onConflict: 'user_id,tmdb_id,media_type' }
   );
+  if (error) throw new Error('Bewertung konnte nicht gespeichert werden.');
 }
 
 export async function syncRecommendationsSupabase(

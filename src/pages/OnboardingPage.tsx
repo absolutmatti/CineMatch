@@ -223,13 +223,24 @@ export function OnboardingPage({
                   aria-hidden="true"
                 />
                 <input
-                  type="search"
+                  type="text"
+                  inputMode="search"
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                   aria-label="Filme und Serien im Onboarding suchen"
                   placeholder="Nach Titel, Genre oder Regie suchen…"
-                  className="h-11 w-full rounded-lg border border-[#30303A] bg-[#17171D] pr-4 pl-10 text-sm text-[#F5F5F7] placeholder:text-[#A0A0AD]/60 focus:border-[#9275E8] focus:outline-none"
+                  className="h-11 w-full rounded-lg border border-[#30303A] bg-[#17171D] pr-10 pl-10 text-sm text-[#F5F5F7] placeholder:text-[#A0A0AD]/60 focus:border-[#9275E8] focus:outline-none"
                 />
+                {query && (
+                  <button
+                    type="button"
+                    onClick={() => setQuery('')}
+                    aria-label="Suchfeld leeren"
+                    className="absolute top-1/2 right-2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md text-[#A0A0AD] hover:text-[#F5F5F7]"
+                  >
+                    <X className="h-4 w-4" aria-hidden="true" />
+                  </button>
+                )}
               </div>
 
               <div className="flex items-center gap-1 rounded-lg border border-[#30303A] bg-[#17171D] p-1">

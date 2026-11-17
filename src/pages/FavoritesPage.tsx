@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { ArrowUpDown, Heart, Search } from 'lucide-react';
+import { ArrowUpDown, Heart, Search, X } from 'lucide-react';
 import type { FavoriteItem, MediaItem, MediaType } from '../types/media';
 import { MediaCard } from '../components/MediaCard';
 import { EmptyState } from '../components/EmptyState';
@@ -133,13 +133,24 @@ export function FavoritesPage({
                 aria-hidden="true"
               />
               <input
-                type="search"
+                type="text"
+                inputMode="search"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 aria-label="In Favoriten suchen"
                 placeholder="In Favoriten suchen…"
-                className="h-11 w-full rounded-lg border border-[#30303A] bg-[#17171D] pr-4 pl-10 text-sm text-[#F5F5F7] placeholder:text-[#A0A0AD]/60 focus:border-[#9275E8] focus:outline-none"
+                className="h-11 w-full rounded-lg border border-[#30303A] bg-[#17171D] pr-10 pl-10 text-sm text-[#F5F5F7] placeholder:text-[#A0A0AD]/60 focus:border-[#9275E8] focus:outline-none"
               />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery('')}
+                  aria-label="Suchfeld leeren"
+                  className="absolute top-1/2 right-2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md text-[#A0A0AD] hover:text-[#F5F5F7]"
+                >
+                  <X className="h-4 w-4" aria-hidden="true" />
+                </button>
+              )}
             </div>
 
             <div className="flex items-center gap-2">

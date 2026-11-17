@@ -80,8 +80,10 @@ export function DashboardPage({
           </h1>
           <p className="text-sm text-[#A0A0AD] sm:text-base">
             {favorites.length > 0
-              ? `Deine Empfehlungen basieren aktuell auf ${favorites.length} gespeicherten ${
-                  favorites.length === 1 ? 'Favoriten' : 'Favoriten'
+              ? `Deine Empfehlungen basieren aktuell auf ${
+                  favorites.length === 1
+                    ? 'einem gespeicherten Favoriten'
+                    : `${favorites.length} gespeicherten Favoriten`
                 }.`
               : 'Füge deine ersten Lieblingsfilme oder -serien hinzu, um persönliche Vorschläge zu erhalten.'}
           </p>
@@ -94,7 +96,8 @@ export function DashboardPage({
               aria-hidden="true"
             />
             <input
-              type="search"
+              type="text"
+              inputMode="search"
               value={quickQuery}
               onChange={(e) => setQuickQuery(e.target.value)}
               aria-label="Schnellsuche nach Filmen oder Serien"

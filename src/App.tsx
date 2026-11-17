@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CATALOG_ITEMS } from './data/catalog';
 import { computeFavoriteGenres, generateRecommendations } from './engine/recommendationEngine';
-import { isSupabaseConfigured } from './lib/supabase';
+import { isSupabaseConfigured, supabase } from './lib/supabase';
 import {
   deleteAccountSupabase,
   loadSupabaseWorkspace,
@@ -12,9 +12,14 @@ import {
   signUpSupabase,
   syncRecommendationsSupabase,
   toggleFavoriteSupabase,
+  updateFavoriteSnapshotSupabase,
   updateProfileSupabase,
 } from './services/databaseService';
-import { checkBackendHealth } from './services/tmdbService';
+import {
+  checkBackendHealth,
+  fetchMediaDetails,
+  searchRemoteMedia,
+} from './services/tmdbService';
 import {
   clearPersistedState,
   createDemoProfile,
@@ -47,6 +52,47 @@ const DEFAULT_DEMO_FAVORITE_IDS = [
   'tv-70523',     // Dark
   'tv-95396',     // Severance
 ];
+
+function isKnownCreatorName(name: string | undefined): boolean {
+  if (!name) return false;
+  const lower = name.trim().toLowerCase();
+  return (
+    lower.length > 0 &&
+    lower !== 'regie unbekannt' &&
+    lower !== 'creator unbekannt' &&
+    lower !== 'unbekannt'
+  );
+}
+
+function mergeMediaRecords(base: MediaItem, incoming: MediaItem): MediaItem {
+  const preferIncomingPoster =
+    incoming.posterUrl && (!base.posterUrl || incoming.posterUrl.includes('image.tmdb.org'))
+      ? incoming.posterUrl
+      : (base.posterUrl ?? incoming.posterUrl);
+  const preferIncomingBackdrop =
+    incoming.backdropUrl && (!base.backdropUrl || incoming.backdropUrl.includes('image.tmdb.org'))
+      ? incoming.backdropUrl
+      : (base.backdropUrl ?? incoming.backdropUrl);
+
+  return {
+    ...base,
+    ...incoming,
+    posterUrl: preferIncomingPoster,
+    backdropUrl: preferIncomingBackdrop,
+    directorOrCreator: isKnownCreatorName(incoming.directorOrCreator)
+      ? incoming.directorOrCreator
+      : base.directorOrCreator,
+    cast: incoming.cast.length > 0 ? incoming.cast : base.cast,
+    keywords: incoming.keywords.length > 0 ? incoming.keywords : base.keywords,
+    storyCharacteristics:
+      incoming.storyCharacteristics.length > 0
+        ? incoming.storyCharacteristics
+        : base.storyCharacteristics,
+    runtimeMinutes: incoming.runtimeMinutes ?? base.runtimeMinutes,
+    seasonsCount: incoming.seasonsCount ?? base.seasonsCount,
+    episodesCount: incoming.episodesCount ?? base.episodesCount,
+  };
+}
 
 function buildFavoriteItems(mediaIds: string[], userId: string): FavoriteItem[] {
   const now = new Date().toISOString();
@@ -92,10 +138,22 @@ export default function App() {
   const [discoverInitialQuery, setDiscoverInitialQuery] = useState('');
   const [autoFocusDiscover, setAutoFocusDiscover] = useState(false);
   const [selectedMedia, setSelectedMedia] = useState<MediaItem | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
   const [backendStatus, setBackendStatus] = useState({
     tmdbConfigured: false,
     supabaseConfigured: isSupabaseConfigured,
   });
+
+  const enrichedFavoriteIdsRef = useRef<Set<string>>(new Set());
+  const trendingLoadedRef = useRef(false);
+  const isMountedRef = useRef(true);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   const isUsingSupabaseSession = Boolean(
     isSupabaseConfigured && appState.profile && appState.profile.id !== 'demo-user-01'
@@ -106,7 +164,7 @@ export default function App() {
     savePersistedState(appState);
   }, [appState]);
 
-  // Check backend health & restore active Supabase session on mount
+  // Check backend health & restore/subscribe to Supabase session
   useEffect(() => {
     checkBackendHealth().then((health) => {
       setBackendStatus({
@@ -115,7 +173,7 @@ export default function App() {
       });
     });
 
-    if (isSupabaseConfigured) {
+    if (isSupabaseConfigured && supabase) {
       loadSupabaseWorkspace().then((workspace) => {
         if (workspace) {
           setAppState((prev) => ({
@@ -126,6 +184,34 @@ export default function App() {
           }));
         }
       });
+
+      const {
+        data: { subscription },
+      } = supabase.auth.onAuthStateChange((event) => {
+        if (event === 'SIGNED_OUT') {
+          setAppState({
+            profile: null,
+            favorites: [],
+            ratings: [],
+            shownRecommendationIds: [],
+          });
+        } else if (event === 'SIGNED_IN') {
+          loadSupabaseWorkspace().then((workspace) => {
+            if (workspace) {
+              setAppState((prev) => ({
+                ...prev,
+                profile: workspace.profile,
+                favorites: workspace.favorites,
+                ratings: workspace.ratings,
+              }));
+            }
+          });
+        }
+      });
+
+      return () => {
+        subscription.unsubscribe();
+      };
     }
   }, []);
 
@@ -135,9 +221,21 @@ export default function App() {
       let changed = false;
       const next = { ...prev };
       for (const item of items) {
-        if (!next[item.id] || (item.cast.length > 0 && next[item.id].cast.length === 0)) {
+        const existing = next[item.id];
+        if (!existing) {
           next[item.id] = item;
           changed = true;
+        } else {
+          const merged = mergeMediaRecords(existing, item);
+          if (
+            merged.posterUrl !== existing.posterUrl ||
+            merged.backdropUrl !== existing.backdropUrl ||
+            merged.cast.length !== existing.cast.length ||
+            merged.keywords.length !== existing.keywords.length
+          ) {
+            next[item.id] = merged;
+            changed = true;
+          }
         }
       }
       return changed ? next : prev;
@@ -151,19 +249,101 @@ export default function App() {
     [expandCatalogPool]
   );
 
+  // Automatically expand recommendation candidate pool with live TMDB trending titles,
+  // favorite metadata/recommendations, and artwork for visible catalog recommendations
+  useEffect(() => {
+    if (!backendStatus.tmdbConfigured || !appState.profile) return;
+
+    if (!trendingLoadedRef.current) {
+      trendingLoadedRef.current = true;
+      searchRemoteMedia({ query: '', mediaType: 'all' })
+        .then((res) => {
+          if (isMountedRef.current && res.items.length > 0) {
+            expandCatalogPool(res.items);
+          }
+        })
+        .catch(() => {});
+    }
+
+    const favoritesToEnrich = appState.favorites
+      .filter((fav) => !enrichedFavoriteIdsRef.current.has(fav.mediaId))
+      .slice(0, 5);
+
+    const catalogWithoutPosters = CATALOG_ITEMS.filter(
+      (item) => !item.posterUrl && !enrichedFavoriteIdsRef.current.has(item.id)
+    ).slice(0, 14);
+
+    const targets = [
+      ...favoritesToEnrich.map((f) => ({
+        id: f.mediaId,
+        mediaType: f.mediaType,
+        tmdbId: f.tmdbId,
+        isFavorite: true,
+      })),
+      ...catalogWithoutPosters
+        .filter((c) => !favoritesToEnrich.some((f) => f.mediaId === c.id))
+        .map((c) => ({
+          id: c.id,
+          mediaType: c.mediaType,
+          tmdbId: c.tmdbId,
+          isFavorite: false,
+        })),
+    ];
+
+    for (const target of targets) {
+      enrichedFavoriteIdsRef.current.add(target.id);
+      fetchMediaDetails(target.mediaType, target.tmdbId)
+        .then((res) => {
+          if (!isMountedRef.current || !res.item) return;
+          const enriched = res.item;
+          expandCatalogPool([enriched, ...res.recommendations]);
+
+          if (target.isFavorite) {
+            setAppState((prev) => ({
+              ...prev,
+              favorites: prev.favorites.map((existing) => {
+                if (existing.mediaId !== enriched.id) return existing;
+                const mergedSnapshot = existing.mediaSnapshot
+                  ? mergeMediaRecords(existing.mediaSnapshot, enriched)
+                  : enriched;
+                return {
+                  ...existing,
+                  posterUrl: mergedSnapshot.posterUrl ?? existing.posterUrl,
+                  mediaSnapshot: mergedSnapshot,
+                };
+              }),
+            }));
+
+            if (isUsingSupabaseSession && appState.profile) {
+              updateFavoriteSnapshotSupabase(appState.profile.id, enriched).catch(() => {});
+            }
+          }
+        })
+        .catch(() => {});
+    }
+  }, [
+    backendStatus.tmdbConfigured,
+    appState.profile,
+    appState.favorites,
+    expandCatalogPool,
+    isUsingSupabaseSession,
+  ]);
+
   // Merged catalog: local curated items + live TMDB snapshots from favorites & search
   const mergedCatalog = useMemo(() => {
     const map = new Map<string, MediaItem>(CATALOG_ITEMS.map((item) => [item.id, item]));
     for (const fav of appState.favorites) {
-      if (fav.mediaSnapshot && !map.has(fav.mediaId)) {
-        map.set(fav.mediaId, fav.mediaSnapshot);
+      if (fav.mediaSnapshot) {
+        const existing = map.get(fav.mediaId);
+        map.set(
+          fav.mediaId,
+          existing ? mergeMediaRecords(existing, fav.mediaSnapshot) : fav.mediaSnapshot
+        );
       }
     }
     for (const [id, item] of Object.entries(remoteMediaPool)) {
       const existing = map.get(id);
-      if (!existing || (item.cast.length > 0 && existing.cast.length === 0)) {
-        map.set(id, item);
-      }
+      map.set(id, existing ? mergeMediaRecords(existing, item) : item);
     }
     return Array.from(map.values());
   }, [appState.favorites, remoteMediaPool]);
@@ -176,7 +356,13 @@ export default function App() {
   const favoriteMediaItems = useMemo(
     () =>
       appState.favorites
-        .map((fav) => fav.mediaSnapshot ?? catalogMap.get(fav.mediaId))
+        .map((fav) => {
+          const fromCatalog = catalogMap.get(fav.mediaId);
+          if (fromCatalog && fav.mediaSnapshot) {
+            return mergeMediaRecords(fav.mediaSnapshot, fromCatalog);
+          }
+          return fromCatalog ?? fav.mediaSnapshot;
+        })
         .filter((item): item is MediaItem => Boolean(item)),
     [appState.favorites, catalogMap]
   );
@@ -372,8 +558,8 @@ export default function App() {
     });
 
     if (isUsingSupabaseSession) {
-      toggleFavoriteSupabase(userId, media, currentlyFavorite).catch(() => {
-        // Keep UI responsive; production error toast can be added if needed
+      toggleFavoriteSupabase(userId, media, currentlyFavorite).catch((err: unknown) => {
+        setSyncError((err as Error).message || 'Favorit konnte nicht synchronisiert werden.');
       });
     }
   };
@@ -412,8 +598,8 @@ export default function App() {
     });
 
     if (isUsingSupabaseSession) {
-      saveFeedbackSupabase(userId, media, clearing ? null : feedback).catch(() => {
-        // Non-blocking
+      saveFeedbackSupabase(userId, media, clearing ? null : feedback).catch((err: unknown) => {
+        setSyncError((err as Error).message || 'Bewertung konnte nicht gespeichert werden.');
       });
     }
 
@@ -460,18 +646,23 @@ export default function App() {
         : prev
     );
     if (isUsingSupabaseSession) {
-      updateProfileSupabase(userId, { onboardingCompleted: true }).catch(() => {});
+      updateProfileSupabase(userId, { onboardingCompleted: true }).catch((err: unknown) => {
+        setSyncError((err as Error).message || 'Onboarding-Status konnte nicht gespeichert werden.');
+      });
     }
     setActiveRoute('dashboard');
   };
 
-  const handleUpdateProfile = (updates: {
+  const handleUpdateProfile = async (updates: {
     displayName: string;
     username: string;
     preferredMediaType: 'all' | MediaType;
   }) => {
     if (!appState.profile) return;
     const userId = appState.profile.id;
+    if (isUsingSupabaseSession) {
+      await updateProfileSupabase(userId, updates);
+    }
     setAppState((prev) =>
       prev.profile
         ? {
@@ -484,12 +675,11 @@ export default function App() {
           }
         : prev
     );
-    if (isUsingSupabaseSession) {
-      updateProfileSupabase(userId, updates).catch(() => {});
-    }
   };
 
   const handleRestartOnboarding = () => {
+    if (!appState.profile) return;
+    const userId = appState.profile.id;
     setAppState((prev) =>
       prev.profile
         ? {
@@ -501,10 +691,14 @@ export default function App() {
           }
         : prev
     );
+    if (isUsingSupabaseSession) {
+      updateProfileSupabase(userId, { onboardingCompleted: false }).catch(() => {});
+    }
   };
 
   const handleSignOut = () => {
     setSelectedMedia(null);
+    setSyncError(null);
     if (isUsingSupabaseSession) {
       signOutSupabase().catch(() => {});
     }
@@ -514,11 +708,12 @@ export default function App() {
     }));
   };
 
-  const handleDeleteAccount = () => {
-    setSelectedMedia(null);
+  const handleDeleteAccount = async () => {
     if (isUsingSupabaseSession) {
-      deleteAccountSupabase().catch(() => {});
+      await deleteAccountSupabase();
     }
+    setSelectedMedia(null);
+    setSyncError(null);
     clearPersistedState();
     setAppState({
       profile: null,
@@ -568,6 +763,21 @@ export default function App() {
       />
 
       <main className="mx-auto w-full max-w-7xl flex-1 px-4 pt-6 pb-8 sm:px-6 sm:pt-8 lg:px-8">
+        {syncError && (
+          <div
+            role="alert"
+            className="mb-6 flex items-center justify-between gap-4 rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-200"
+          >
+            <span>{syncError}</span>
+            <button
+              type="button"
+              onClick={() => setSyncError(null)}
+              className="shrink-0 rounded-md px-2.5 py-1 text-xs font-medium text-rose-100 hover:bg-rose-500/20"
+            >
+              Schließen
+            </button>
+          </div>
+        )}
         {activeRoute === 'dashboard' && (
           <DashboardPage
             displayName={appState.profile.displayName}
