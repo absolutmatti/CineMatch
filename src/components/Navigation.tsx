@@ -1,15 +1,17 @@
-import { Compass, Heart, LayoutDashboard, Search, User } from 'lucide-react';
+import { Compass, Heart, LayoutDashboard, Search, User, Users } from 'lucide-react';
 import type { AppRoute } from '../types/media';
 
 interface NavigationProps {
   activeRoute: AppRoute;
   favoritesCount: number;
+  pendingRequestsCount?: number;
   onNavigate: (route: AppRoute, options?: { focusSearch?: boolean }) => void;
 }
 
 const NAV_ITEMS: { id: AppRoute; label: string; icon: typeof LayoutDashboard }[] = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { id: 'discover', label: 'Entdecken', icon: Compass },
+  { id: 'matches', label: 'Duo-Match', icon: Users },
   { id: 'favorites', label: 'Favoriten', icon: Heart },
   { id: 'profile', label: 'Profil', icon: User },
 ];
@@ -18,7 +20,12 @@ const NAV_ITEMS: { id: AppRoute; label: string; icon: typeof LayoutDashboard }[]
  * Responsive navigation adhering to the 3-zone Desktop Top Bar Contract
  * and <=15% Mobile Sticky Cap (52px top bar + 64px bottom tab bar = 116px on 844px viewport).
  */
-export function Navigation({ activeRoute, favoritesCount, onNavigate }: NavigationProps) {
+export function Navigation({
+  activeRoute,
+  favoritesCount,
+  pendingRequestsCount = 0,
+  onNavigate,
+}: NavigationProps) {
   const currentLabel = NAV_ITEMS.find((item) => item.id === activeRoute)?.label ?? 'CineMatch';
 
   return (
@@ -35,7 +42,7 @@ export function Navigation({ activeRoute, favoritesCount, onNavigate }: Navigati
             CineMatch
           </button>
 
-          {/* Zone 2: 4 single-line navigation links */}
+          {/* Zone 2: 5 single-line navigation links */}
           <nav aria-label="Hauptnavigation" className="flex items-center gap-7">
             {NAV_ITEMS.map((item) => {
               const isActive = activeRoute === item.id;
@@ -56,6 +63,11 @@ export function Navigation({ activeRoute, favoritesCount, onNavigate }: Navigati
                     {item.id === 'favorites' && favoritesCount > 0 && (
                       <span className="ml-1.5 font-mono text-xs tabular-nums text-[#B29AF5]">
                         ({favoritesCount})
+                      </span>
+                    )}
+                    {item.id === 'matches' && pendingRequestsCount > 0 && (
+                      <span className="ml-1.5 font-mono text-xs tabular-nums text-[#B29AF5]">
+                        ({pendingRequestsCount})
                       </span>
                     )}
                   </span>
@@ -107,7 +119,7 @@ export function Navigation({ activeRoute, favoritesCount, onNavigate }: Navigati
       {/* Mobile Fixed Bottom Navigation Bar (64px height) */}
       <nav
         aria-label="Mobile Navigation"
-        className="fixed right-0 bottom-0 left-0 z-40 grid h-16 grid-cols-4 items-center border-t border-[#30303A] bg-[#17171D]/95 backdrop-blur-md md:hidden"
+        className="fixed right-0 bottom-0 left-0 z-40 grid h-16 grid-cols-5 items-center border-t border-[#30303A] bg-[#17171D]/95 backdrop-blur-md md:hidden"
       >
         {NAV_ITEMS.map((item) => {
           const Icon = item.icon;
@@ -118,12 +130,12 @@ export function Navigation({ activeRoute, favoritesCount, onNavigate }: Navigati
               type="button"
               onClick={() => onNavigate(item.id)}
               aria-current={isActive ? 'page' : undefined}
-              className={`flex min-h-[48px] flex-col items-center justify-center gap-1 transition-colors ${
+              className={`flex min-h-[48px] flex-col items-center justify-center gap-1 px-1 transition-colors ${
                 isActive ? 'text-[#B29AF5]' : 'text-[#A0A0AD] hover:text-[#F5F5F7]'
               }`}
             >
               <Icon className="h-5 w-5" aria-hidden="true" />
-              <span className="text-[11px] font-medium tracking-tight whitespace-nowrap">
+              <span className="text-[10px] font-medium tracking-tight whitespace-nowrap">
                 {item.label}
               </span>
             </button>

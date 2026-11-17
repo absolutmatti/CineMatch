@@ -1,4 +1,10 @@
-import type { FavoriteItem, UserProfile, UserRating } from '../types/media';
+import type {
+  FavoriteItem,
+  FriendConnection,
+  SharedWatchlistItem,
+  UserProfile,
+  UserRating,
+} from '../types/media';
 
 const STORAGE_KEY = 'cinematch_mvp_state_v1';
 
@@ -7,6 +13,8 @@ export interface PersistedAppState {
   favorites: FavoriteItem[];
   ratings: UserRating[];
   shownRecommendationIds: string[];
+  demoConnections?: FriendConnection[];
+  demoWatchlist?: SharedWatchlistItem[];
 }
 
 const DEFAULT_STATE: PersistedAppState = {
@@ -29,6 +37,8 @@ export function loadPersistedState(): PersistedAppState {
       shownRecommendationIds: Array.isArray(parsed.shownRecommendationIds)
         ? parsed.shownRecommendationIds
         : [],
+      demoConnections: Array.isArray(parsed.demoConnections) ? parsed.demoConnections : undefined,
+      demoWatchlist: Array.isArray(parsed.demoWatchlist) ? parsed.demoWatchlist : undefined,
     };
   } catch {
     return DEFAULT_STATE;

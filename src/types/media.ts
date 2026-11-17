@@ -2,7 +2,7 @@ export type MediaType = 'movie' | 'tv';
 
 export type FeedbackType = 'like' | 'dislike' | 'watched';
 
-export type AppRoute = 'dashboard' | 'discover' | 'favorites' | 'profile';
+export type AppRoute = 'dashboard' | 'discover' | 'favorites' | 'matches' | 'profile';
 
 export type AuthView = 'login' | 'register' | 'reset';
 
@@ -104,11 +104,52 @@ export interface GenreStat {
 }
 
 /**
- * Architectural placeholder interface for Phase 2+ Social Matching.
- * Kept decoupled so group recommendations can later combine two UserProfiles.
+ * Phase 2 Social Matching types: connecting friends, balanced duo recommendations,
+ * and shared watchlists.
  */
 export interface GroupMatchContext {
   participantIds: string[];
   sharedGenres: string[];
   excludedWatchedIds: string[];
+}
+
+export type FriendshipStatus = 'pending' | 'accepted';
+
+export interface FriendProfileSummary {
+  id: string;
+  username: string;
+  displayName: string;
+  avatarUrl?: string;
+}
+
+export interface FriendConnection {
+  id: string;
+  status: FriendshipStatus;
+  direction: 'incoming' | 'outgoing' | 'demo';
+  friend: FriendProfileSummary;
+  favorites: FavoriteItem[];
+  ratings: UserRating[];
+  createdAt: string;
+}
+
+export interface SharedWatchlistItem {
+  id: string;
+  friendshipId: string;
+  tmdbId: number;
+  mediaType: MediaType;
+  mediaId: string;
+  title: string;
+  posterUrl?: string;
+  mediaSnapshot?: MediaItem;
+  addedByUserId: string;
+  addedByName: string;
+  watched: boolean;
+  createdAt: string;
+}
+
+export interface GroupRecommendationResult extends RecommendationResult {
+  userAScore: number;
+  userBScore: number;
+  balanceScore: number;
+  sharedGenres: string[];
 }

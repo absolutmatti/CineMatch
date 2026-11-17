@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CATALOG_ITEMS } from './data/catalog';
+import {
+  createInitialDemoConnections,
+  createInitialDemoWatchlist,
+  DEMO_DIRECTORY_PROFILES,
+} from './data/demoFriends';
 import { computeFavoriteGenres, generateRecommendations } from './engine/recommendationEngine';
 import { ensureSupabaseClient, isSupabaseConfigured } from './lib/supabase';
 import {
@@ -17,6 +22,15 @@ import {
   updateProfileSupabase,
 } from './services/databaseService';
 import {
+  acceptFriendRequestSupabase,
+  addSharedWatchlistItemSupabase,
+  loadSocialWorkspaceSupabase,
+  removeFriendshipSupabase,
+  removeSharedWatchlistItemSupabase,
+  sendFriendRequestSupabase,
+  toggleSharedWatchlistWatchedSupabase,
+} from './services/socialService';
+import {
   checkBackendHealth,
   fetchMediaDetails,
   searchRemoteMedia,
@@ -32,8 +46,10 @@ import type {
   AppRoute,
   FavoriteItem,
   FeedbackType,
+  FriendConnection,
   MediaItem,
   MediaType,
+  SharedWatchlistItem,
   UserRating,
 } from './types/media';
 import { Navigation } from './components/Navigation';
@@ -45,6 +61,7 @@ import { OnboardingPage } from './pages/OnboardingPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { DiscoverPage } from './pages/DiscoverPage';
 import { FavoritesPage } from './pages/FavoritesPage';
+import { SocialMatchPage } from './pages/SocialMatchPage';
 import { ProfilePage } from './pages/ProfilePage';
 
 const DEFAULT_DEMO_FAVORITE_IDS = [
@@ -129,6 +146,8 @@ export default function App() {
         favorites: buildFavoriteItems(DEFAULT_DEMO_FAVORITE_IDS, demoProfile.id),
         ratings: [],
         shownRecommendationIds: [],
+        demoConnections: createInitialDemoConnections(),
+        demoWatchlist: createInitialDemoWatchlist(),
       };
     }
     return persisted;
@@ -147,6 +166,13 @@ export default function App() {
     tmdbConfigured: false,
     supabaseConfigured: isSupabaseConfigured,
   });
+
+  // Social Matching state (live Supabase when authenticated, local persisted fallback in Demo Mode)
+  const [supabaseConnections, setSupabaseConnections] = useState<FriendConnection[]>([]);
+  const [supabaseWatchlist, setSupabaseWatchlist] = useState<SharedWatchlistItem[]>([]);
+  const [socialMigrationMissing, setSocialMigrationMissing] = useState(false);
+  const [isLoadingSocial, setIsLoadingSocial] = useState(false);
+  const [selectedFriendId, setSelectedFriendId] = useState<string | null>(null);
 
   const enrichedFavoriteIdsRef = useRef<Set<string>>(new Set());
   const discoveredGenresRef = useRef<Set<string>>(new Set());
@@ -173,6 +199,23 @@ export default function App() {
   useEffect(() => {
     savePersistedState(appState);
   }, [appState]);
+
+  const refreshSupabaseSocial = useCallback(async (userId: string) => {
+    setIsLoadingSocial(true);
+    try {
+      const social = await loadSocialWorkspaceSupabase(userId);
+      if (!isMountedRef.current) return;
+      setSupabaseConnections(social.connections);
+      setSupabaseWatchlist(social.watchlist);
+      setSocialMigrationMissing(social.migrationMissing);
+    } catch {
+      // Keep non-blocking; empty state remains clean
+    } finally {
+      if (isMountedRef.current) {
+        setIsLoadingSocial(false);
+      }
+    }
+  }, []);
 
   // Check backend health, hydrate runtime Supabase client if needed, & restore/subscribe to session
   useEffect(() => {
@@ -201,6 +244,7 @@ export default function App() {
             favorites: workspace.favorites,
             ratings: workspace.ratings,
           }));
+          refreshSupabaseSocial(workspace.profile.id);
           if (initialRecoveryUrlRef.current) {
             setShowPasswordRecovery(true);
             initialRecoveryUrlRef.current = false;
@@ -220,10 +264,15 @@ export default function App() {
                   favorites: ws.favorites,
                   ratings: ws.ratings,
                 }));
+                refreshSupabaseSocial(ws.profile.id);
               }
             });
           } else if (event === 'SIGNED_OUT') {
             setShowPasswordRecovery(false);
+            setSupabaseConnections([]);
+            setSupabaseWatchlist([]);
+            setSocialMigrationMissing(false);
+            setSelectedFriendId(null);
             setAppState({
               profile: null,
               favorites: [],
@@ -239,6 +288,7 @@ export default function App() {
                   favorites: ws.favorites,
                   ratings: ws.ratings,
                 }));
+                refreshSupabaseSocial(ws.profile.id);
               }
             });
           }
@@ -251,7 +301,7 @@ export default function App() {
       active = false;
       unsubscribeAuth?.();
     };
-  }, []);
+  }, [refreshSupabaseSocial]);
 
   const expandCatalogPool = useCallback((items: MediaItem[]) => {
     if (items.length === 0) return;
@@ -393,24 +443,47 @@ export default function App() {
     isUsingSupabaseSession,
   ]);
 
-  // Merged catalog: local curated items + live TMDB snapshots from favorites & search
+  const activeConnections = useMemo(() => {
+    if (isUsingSupabaseSession) return supabaseConnections;
+    return appState.demoConnections ?? createInitialDemoConnections();
+  }, [isUsingSupabaseSession, supabaseConnections, appState.demoConnections]);
+
+  const activeWatchlist = useMemo(() => {
+    if (isUsingSupabaseSession) return supabaseWatchlist;
+    return appState.demoWatchlist ?? createInitialDemoWatchlist();
+  }, [isUsingSupabaseSession, supabaseWatchlist, appState.demoWatchlist]);
+
+  const pendingRequestsCount = useMemo(
+    () =>
+      activeConnections.filter((c) => c.status === 'pending' && c.direction === 'incoming')
+        .length,
+    [activeConnections]
+  );
+
+  // Merged catalog: local curated items + live TMDB snapshots from favorites, friends, watchlist & search
   const mergedCatalog = useMemo(() => {
     const map = new Map<string, MediaItem>(CATALOG_ITEMS.map((item) => [item.id, item]));
+    const mergeIn = (item: MediaItem | undefined) => {
+      if (!item) return;
+      const existing = map.get(item.id);
+      map.set(item.id, existing ? mergeMediaRecords(existing, item) : item);
+    };
     for (const fav of appState.favorites) {
-      if (fav.mediaSnapshot) {
-        const existing = map.get(fav.mediaId);
-        map.set(
-          fav.mediaId,
-          existing ? mergeMediaRecords(existing, fav.mediaSnapshot) : fav.mediaSnapshot
-        );
+      mergeIn(fav.mediaSnapshot);
+    }
+    for (const conn of activeConnections) {
+      for (const fav of conn.favorites) {
+        mergeIn(fav.mediaSnapshot);
       }
     }
-    for (const [id, item] of Object.entries(remoteMediaPool)) {
-      const existing = map.get(id);
-      map.set(id, existing ? mergeMediaRecords(existing, item) : item);
+    for (const entry of activeWatchlist) {
+      mergeIn(entry.mediaSnapshot);
+    }
+    for (const item of Object.values(remoteMediaPool)) {
+      mergeIn(item);
     }
     return Array.from(map.values());
-  }, [appState.favorites, remoteMediaPool]);
+  }, [appState.favorites, activeConnections, activeWatchlist, remoteMediaPool]);
 
   const catalogMap = useMemo(
     () => new Map(mergedCatalog.map((item) => [item.id, item])),
@@ -594,6 +667,8 @@ export default function App() {
       favorites: buildFavoriteItems(DEFAULT_DEMO_FAVORITE_IDS, profile.id),
       ratings: [],
       shownRecommendationIds: [],
+      demoConnections: createInitialDemoConnections(),
+      demoWatchlist: createInitialDemoWatchlist(),
     });
     setActiveRoute('dashboard');
   };
@@ -766,9 +841,185 @@ export default function App() {
     }
   };
 
+  const handleSendFriendRequest = async (username: string) => {
+    if (!appState.profile) return;
+    if (isUsingSupabaseSession) {
+      await sendFriendRequestSupabase(username);
+      await refreshSupabaseSocial(appState.profile.id);
+      return;
+    }
+
+    const cleaned = username.trim().toLowerCase().replace(/^@+/, '');
+    if (cleaned === appState.profile.username.toLowerCase()) {
+      throw new Error('Du kannst dich nicht selbst als Freund hinzufügen.');
+    }
+    const existingList = appState.demoConnections ?? createInitialDemoConnections();
+    if (existingList.some((c) => c.friend.username.toLowerCase() === cleaned)) {
+      throw new Error('Zwischen euch besteht bereits eine Verbindung oder Anfrage.');
+    }
+    const template = DEMO_DIRECTORY_PROFILES.find(
+      (c) => c.friend.username.toLowerCase() === cleaned
+    );
+    const nextConn: FriendConnection = template ?? {
+      id: `demo-conn-${cleaned}`,
+      status: 'accepted',
+      direction: 'outgoing',
+      friend: {
+        id: `demo-friend-${cleaned}`,
+        username: cleaned,
+        displayName: cleaned
+          .split(/[._-]+/)
+          .filter(Boolean)
+          .map((w) => w[0].toUpperCase() + w.slice(1))
+          .join(' '),
+      },
+      favorites: [
+        {
+          id: `demo-fav-${cleaned}-movie-496243`,
+          userId: `demo-friend-${cleaned}`,
+          tmdbId: 496243,
+          mediaType: 'movie',
+          mediaId: 'movie-496243',
+          title: 'Parasite',
+          mediaSnapshot: CATALOG_ITEMS.find((m) => m.id === 'movie-496243'),
+          createdAt: new Date().toISOString(),
+        },
+        {
+          id: `demo-fav-${cleaned}-tv-87108`,
+          userId: `demo-friend-${cleaned}`,
+          tmdbId: 87108,
+          mediaType: 'tv',
+          mediaId: 'tv-87108',
+          title: 'Chernobyl',
+          mediaSnapshot: CATALOG_ITEMS.find((m) => m.id === 'tv-87108'),
+          createdAt: new Date().toISOString(),
+        },
+      ],
+      ratings: [],
+      createdAt: new Date().toISOString(),
+    };
+
+    setAppState((prev) => ({
+      ...prev,
+      demoConnections: [nextConn, ...(prev.demoConnections ?? createInitialDemoConnections())],
+    }));
+    setSelectedFriendId(nextConn.id);
+  };
+
+  const handleAcceptFriendRequest = async (connectionId: string) => {
+    if (!appState.profile) return;
+    if (isUsingSupabaseSession) {
+      await acceptFriendRequestSupabase(connectionId);
+      await refreshSupabaseSocial(appState.profile.id);
+      setSelectedFriendId(connectionId);
+      return;
+    }
+
+    setAppState((prev) => ({
+      ...prev,
+      demoConnections: (prev.demoConnections ?? createInitialDemoConnections()).map((c) =>
+        c.id === connectionId ? { ...c, status: 'accepted' } : c
+      ),
+    }));
+    setSelectedFriendId(connectionId);
+  };
+
+  const handleRemoveConnection = async (connectionId: string) => {
+    if (!appState.profile) return;
+    if (isUsingSupabaseSession) {
+      await removeFriendshipSupabase(connectionId);
+      await refreshSupabaseSocial(appState.profile.id);
+      if (selectedFriendId === connectionId) setSelectedFriendId(null);
+      return;
+    }
+
+    setAppState((prev) => ({
+      ...prev,
+      demoConnections: (prev.demoConnections ?? createInitialDemoConnections()).filter(
+        (c) => c.id !== connectionId
+      ),
+      demoWatchlist: (prev.demoWatchlist ?? createInitialDemoWatchlist()).filter(
+        (w) => w.friendshipId !== connectionId
+      ),
+    }));
+    if (selectedFriendId === connectionId) setSelectedFriendId(null);
+  };
+
+  const handleAddToSharedWatchlist = async (connectionId: string, media: MediaItem) => {
+    if (!appState.profile) return;
+    const userId = appState.profile.id;
+    const userName = appState.profile.displayName;
+    if (isUsingSupabaseSession) {
+      await addSharedWatchlistItemSupabase(connectionId, userId, media);
+      await refreshSupabaseSocial(userId);
+      return;
+    }
+
+    setAppState((prev) => {
+      const current = prev.demoWatchlist ?? createInitialDemoWatchlist();
+      if (current.some((w) => w.friendshipId === connectionId && w.mediaId === media.id)) {
+        return prev;
+      }
+      const nextItem: SharedWatchlistItem = {
+        id: `demo-wl-${connectionId}-${media.id}`,
+        friendshipId: connectionId,
+        tmdbId: media.tmdbId,
+        mediaType: media.mediaType,
+        mediaId: media.id,
+        title: media.title,
+        posterUrl: media.posterUrl,
+        mediaSnapshot: media,
+        addedByUserId: userId,
+        addedByName: userName,
+        watched: false,
+        createdAt: new Date().toISOString(),
+      };
+      return {
+        ...prev,
+        demoWatchlist: [nextItem, ...current],
+      };
+    });
+  };
+
+  const handleToggleWatchlistWatched = async (itemId: string, watched: boolean) => {
+    if (!appState.profile) return;
+    if (isUsingSupabaseSession) {
+      await toggleSharedWatchlistWatchedSupabase(itemId, watched);
+      await refreshSupabaseSocial(appState.profile.id);
+      return;
+    }
+
+    setAppState((prev) => ({
+      ...prev,
+      demoWatchlist: (prev.demoWatchlist ?? createInitialDemoWatchlist()).map((w) =>
+        w.id === itemId ? { ...w, watched } : w
+      ),
+    }));
+  };
+
+  const handleRemoveWatchlistItem = async (itemId: string) => {
+    if (!appState.profile) return;
+    if (isUsingSupabaseSession) {
+      await removeSharedWatchlistItemSupabase(itemId);
+      await refreshSupabaseSocial(appState.profile.id);
+      return;
+    }
+
+    setAppState((prev) => ({
+      ...prev,
+      demoWatchlist: (prev.demoWatchlist ?? createInitialDemoWatchlist()).filter(
+        (w) => w.id !== itemId
+      ),
+    }));
+  };
+
   const handleSignOut = () => {
     setSelectedMedia(null);
     setSyncError(null);
+    setSupabaseConnections([]);
+    setSupabaseWatchlist([]);
+    setSocialMigrationMissing(false);
+    setSelectedFriendId(null);
     if (isUsingSupabaseSession) {
       signOutSupabase().catch(() => {});
     }
@@ -787,6 +1038,10 @@ export default function App() {
     }
     setSelectedMedia(null);
     setSyncError(null);
+    setSupabaseConnections([]);
+    setSupabaseWatchlist([]);
+    setSocialMigrationMissing(false);
+    setSelectedFriendId(null);
     clearPersistedState();
     setAppState({
       profile: null,
@@ -851,6 +1106,7 @@ export default function App() {
       <Navigation
         activeRoute={activeRoute}
         favoritesCount={appState.favorites.length}
+        pendingRequestsCount={pendingRequestsCount}
         onNavigate={handleNavigate}
       />
 
@@ -895,6 +1151,31 @@ export default function App() {
             onOpenDetail={setSelectedMedia}
             onToggleFavorite={handleToggleFavorite}
             onCatalogExpand={expandCatalogPool}
+          />
+        )}
+
+        {activeRoute === 'matches' && (
+          <SocialMatchPage
+            profile={appState.profile}
+            isDemoMode={!isUsingSupabaseSession}
+            catalog={mergedCatalog}
+            userFavorites={appState.favorites}
+            userRatings={appState.ratings}
+            connections={activeConnections}
+            watchlist={activeWatchlist}
+            selectedFriendId={selectedFriendId}
+            migrationMissing={socialMigrationMissing}
+            isLoadingSocial={isLoadingSocial}
+            onSelectFriend={setSelectedFriendId}
+            onSendFriendRequest={handleSendFriendRequest}
+            onAcceptFriendRequest={handleAcceptFriendRequest}
+            onRemoveConnection={handleRemoveConnection}
+            onAddToSharedWatchlist={handleAddToSharedWatchlist}
+            onToggleWatchlistWatched={handleToggleWatchlistWatched}
+            onRemoveWatchlistItem={handleRemoveWatchlistItem}
+            onOpenDetail={setSelectedMedia}
+            onFeedback={handleFeedback}
+            onGoToDiscover={() => handleNavigate('discover')}
           />
         )}
 
