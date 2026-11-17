@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import type { FeedbackType, MediaItem, RecommendationResult } from '../types/media';
 import { fetchMediaDetails } from '../services/tmdbService';
+import { resolveAppAssetUrl } from '../lib/assets';
 import { CinemaPoster } from './CinemaPoster';
 
 interface MediaDetailModalProps {
@@ -105,7 +106,8 @@ export function MediaDetailModal({
   const activeMedia = detailedMedia ?? media;
   if (!activeMedia) return null;
 
-  const hasBackdrop = Boolean(activeMedia.backdropUrl) && !backdropFailed;
+  const resolvedBackdropUrl = resolveAppAssetUrl(activeMedia.backdropUrl);
+  const hasBackdrop = Boolean(resolvedBackdropUrl) && !backdropFailed;
   const durationText =
     activeMedia.mediaType === 'movie' && activeMedia.runtimeMinutes
       ? `${activeMedia.runtimeMinutes} Min.`
@@ -141,7 +143,7 @@ export function MediaDetailModal({
         <div className="relative h-48 w-full overflow-hidden bg-[#101014] sm:h-64">
           {hasBackdrop ? (
             <img
-              src={activeMedia.backdropUrl}
+              src={resolvedBackdropUrl}
               alt={`Szenenbild zu ${activeMedia.title}`}
               referrerPolicy="no-referrer"
               onError={() => setBackdropFailed(true)}

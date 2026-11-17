@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { ArrowRight, CheckCircle2, Eye, EyeOff, Film, Lock, Mail, User } from 'lucide-react';
 import type { AuthView } from '../types/media';
+import { resolveAppAssetUrl } from '../lib/assets';
 
 interface AuthPageProps {
   onLogin: (email: string, password: string) => Promise<void>;
@@ -107,7 +108,7 @@ export function AuthPage({
       {/* Left Brand & Editorial Showcase Column */}
       <div className="relative hidden overflow-hidden border-r border-[#30303A] bg-[#17171D] lg:col-span-6 lg:flex lg:flex-col lg:justify-between lg:p-12">
         <img
-          src="/src/assets/images/cinema_hero_backdrop_1794870405404.jpg"
+          src={resolveAppAssetUrl('/src/assets/images/cinema_hero_backdrop_1794870405404.jpg')}
           alt="CineMatch Kino-Atmosphäre"
           referrerPolicy="no-referrer"
           className="pointer-events-none absolute inset-0 h-full w-full object-cover opacity-35"

@@ -22,6 +22,7 @@ import type {
 import { MediaCard } from '../components/MediaCard';
 import { CinemaPoster } from '../components/CinemaPoster';
 import { EmptyState } from '../components/EmptyState';
+import { resolveAppAssetUrl } from '../lib/assets';
 
 interface DashboardPageProps {
   displayName: string;
@@ -138,10 +139,10 @@ export function DashboardPage({
             {/* Backdrop Artwork */}
             <div className="pointer-events-none absolute inset-0">
               <img
-                src={
+                src={resolveAppAssetUrl(
                   spotlightRecommendation.media.backdropUrl ??
-                  '/src/assets/images/cinema_hero_backdrop_1794870405404.jpg'
-                }
+                    '/src/assets/images/cinema_hero_backdrop_1794870405404.jpg'
+                )}
                 alt=""
                 referrerPolicy="no-referrer"
                 className="h-full w-full object-cover opacity-35"

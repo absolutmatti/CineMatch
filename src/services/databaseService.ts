@@ -162,6 +162,11 @@ export async function signInSupabase(email: string, password: string): Promise<A
   return workspace;
 }
 
+function getAuthRedirectUrl(): string {
+  const basePath = import.meta.env.BASE_URL || '/';
+  return new URL(basePath, window.location.origin).toString();
+}
+
 export async function signUpSupabase(
   displayName: string,
   email: string,
@@ -175,6 +180,7 @@ export async function signUpSupabase(
     password,
     options: {
       data: { display_name: displayName },
+      emailRedirectTo: getAuthRedirectUrl(),
     },
   });
 
@@ -194,7 +200,7 @@ export async function resetPasswordSupabase(email: string): Promise<void> {
   const client = supabase ?? (await ensureSupabaseClient());
   if (!client) return;
   const { error } = await client.auth.resetPasswordForEmail(email, {
-    redirectTo: window.location.origin,
+    redirectTo: getAuthRedirectUrl(),
   });
   if (error) {
     throw new Error(translateSupabaseError(error.message));

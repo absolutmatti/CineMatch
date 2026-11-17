@@ -290,10 +290,23 @@ async function startServer() {
   const app = express();
   app.use(express.json());
 
-  // Basic CORS header for optional GitHub Pages frontend deployments
+  // CORS configuration for GitHub Pages and external static frontend deployments
+  const rawCorsOrigins = (process.env.CORS_ORIGIN || '*')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+
   app.use((req, res, next) => {
-    const allowedOrigin = process.env.CORS_ORIGIN || '*';
-    res.header('Access-Control-Allow-Origin', allowedOrigin);
+    const requestOrigin = req.headers.origin;
+    if (rawCorsOrigins.includes('*') || rawCorsOrigins.length === 0) {
+      res.header('Access-Control-Allow-Origin', '*');
+    } else if (requestOrigin && rawCorsOrigins.includes(requestOrigin)) {
+      res.header('Access-Control-Allow-Origin', requestOrigin);
+      res.header('Vary', 'Origin');
+    } else {
+      res.header('Access-Control-Allow-Origin', rawCorsOrigins[0]);
+      res.header('Vary', 'Origin');
+    }
     res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
     res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     if (req.method === 'OPTIONS') {
@@ -333,7 +346,7 @@ async function startServer() {
   // Health & capability status (never exposes raw secrets)
   app.get('/api/health', (_req: Request, res: Response) => {
     const { supabaseUrl, supabasePublishableKey } = getPublicSupabaseConfig();
-
+    res.setHeader('Cache-Control', 'no-store');
     res.json({
       ok: true,
       tmdbConfigured: Boolean(process.env.TMDB_API_KEY),
@@ -344,6 +357,7 @@ async function startServer() {
   // Public client configuration for runtime-injected containers (never exposes server secrets)
   app.get('/api/public-config', (_req: Request, res: Response) => {
     const { supabaseUrl, supabasePublishableKey } = getPublicSupabaseConfig();
+    res.setHeader('Cache-Control', 'no-store');
     res.json({
       supabaseUrl,
       supabasePublishableKey,
@@ -643,6 +657,10 @@ async function startServer() {
       app.use(express.static(distPath));
       app.get('*', (_req: Request, res: Response) => {
         res.sendFile(path.join(distPath, 'index.html'));
+      });
+    } else {
+      app.get('/', (_req: Request, res: Response) => {
+        res.json({ service: 'CineMatch API', ok: true });
       });
     }
   }

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Film, Tv } from 'lucide-react';
 import type { MediaItem } from '../types/media';
+import { resolveAppAssetUrl } from '../lib/assets';
 
 interface CinemaPosterProps {
   media: MediaItem;
@@ -24,7 +25,8 @@ export function CinemaPoster({
 }: CinemaPosterProps) {
   const [imgFailed, setImgFailed] = useState(false);
   const year = media.releaseDate ? media.releaseDate.slice(0, 4) : '';
-  const hasRealImage = Boolean(media.posterUrl) && !imgFailed;
+  const resolvedPosterUrl = resolveAppAssetUrl(media.posterUrl);
+  const hasRealImage = Boolean(resolvedPosterUrl) && !imgFailed;
 
   return (
     <div
@@ -39,7 +41,7 @@ export function CinemaPoster({
     >
       {hasRealImage ? (
         <img
-          src={media.posterUrl}
+          src={resolvedPosterUrl}
           alt={`Film- oder Serienposter zu ${media.title}`}
           referrerPolicy="no-referrer"
           loading="lazy"
