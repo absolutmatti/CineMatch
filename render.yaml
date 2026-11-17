@@ -3,7 +3,7 @@ services:
     name: cinematch-api
     runtime: node
     plan: free
-    buildCommand: npm install --omit=dev --no-audit --no-fund
+    buildCommand: npm install --omit=dev --legacy-peer-deps --no-audit --no-fund
     startCommand: NODE_ENV=production node server.ts
     healthCheckPath: /api/health
     envVars:

@@ -17,6 +17,7 @@ Das Repository enthält bereits sowohl ein `Dockerfile` (für **Google Cloud Run
 2. Erstelle auf [render.com](https://render.com) einen neuen **Web Service** (oder **Blueprint**) mit deinem Repository.
 3. Hinterlege im Bereich **Environment** folgende Variablen:
    - `NODE_ENV` = `production`
+   - `NODE_VERSION` = `22.22.0`
    - `TMDB_API_KEY` = dein TMDB API-Key
    - `SUPABASE_URL` = deine Supabase Project URL (`https://<projekt-id>.supabase.co`)
    - `SUPABASE_SECRET_KEY` = dein Supabase Secret Key (`sb_secret_...`)
